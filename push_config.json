@@ -1,6 +1,6 @@
 {
   "enabled": true,
-  "debounce_seconds": 600,
+  "debounce_seconds": 7200,
   "channels": {
     "bark_url": "",
     "wecom_webhook": "",

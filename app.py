@@ -57,15 +57,26 @@ with st.sidebar.expander("⚙️ 推送通道配置 (点击配置)", expanded=Fa
 
 @st.cache_data(ttl=600)
 def load_all_market_data():
-    all_tickers = AI_LEADERS + list(BENCHMARKS.values())
-    raw_data = fetch_historical_data(all_tickers, period="1y")
-    pcr = fetch_put_call_ratio("QQQ")
-    treasury = fetch_treasury_yields()
-    fear_greed = fetch_fear_and_greed()
-    return raw_data, pcr, treasury, fear_greed
+    bundle = fetch_all_inputs()
+    return bundle
 
-with st.spinner("正在从多源数据链路（雅虎财经、东方财富直连、CNN 官方）拉取最新行情与宏观数据..."):
-    data_dict, current_pcr, treasury_data, fear_greed_data = load_all_market_data()
+with st.spinner("正在从多源金融数据链路（TuShare Pro、同花顺、雅虎财经、CNN 官方）拉取最新行情与宏观数据..."):
+    market_bundle = load_all_market_data()
+    data_dict = market_bundle["equity"]["data"]
+    current_pcr = market_bundle["pcr"]
+    treasury_data = market_bundle["treasury"]
+    fear_greed_data = market_bundle["fear_greed"]
+    data_status = market_bundle.get("status", [])
+
+if data_status:
+    with st.expander("📢 数据源链路状态与透明通报（点击展开）", expanded=any(x["level"] == "missing" for x in data_status)):
+        for issue in data_status:
+            if issue["level"] == "missing":
+                st.error(f"❌ **【缺失】{issue['item']}**：{issue['detail']}")
+            elif issue["level"] == "secondary":
+                st.warning(f"⚠️ **【降级】{issue['item']}**：{issue['detail']}")
+            else:
+                st.info(f"ℹ️ **【提示】{issue['item']}**：{issue['detail']}")
 
 engine = CrashRiskEngine(data_dict, current_pcr, treasury_data, fear_greed_data)
 risk_result = engine.evaluate_overall_risk()

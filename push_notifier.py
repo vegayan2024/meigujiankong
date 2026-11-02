@@ -26,18 +26,36 @@ from typing import Dict, Any, Optional, List
 logger = logging.getLogger("MobilePushNotifier")
 CONFIG_FILE = Path(__file__).resolve().parent / "push_config.json"
 
+DEBOUNCE_FILE = Path(__file__).resolve().parent / ".push_debounce_cache.json"
+
 class MobilePushNotifier:
     def __init__(self, config_path: Optional[Path] = None):
         self.config_path = config_path or CONFIG_FILE
         self.config = self._load_config()
-        self._sent_cache: Dict[str, float] = {}
-        self.debounce_seconds = self.config.get("debounce_seconds", 600)  # 默认10分钟防抖
+        self.debounce_seconds = self.config.get("debounce_seconds", 7200)  # 默认2小时(7200秒)防抖
+        self._sent_cache = self._load_debounce_cache()
+
+    def _load_debounce_cache(self) -> Dict[str, Any]:
+        """从本地 JSON 文件读取防抖记录，实现跨进程持久化"""
+        if DEBOUNCE_FILE.exists():
+            try:
+                return json.loads(DEBOUNCE_FILE.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.warning(f"读取防抖缓存 {DEBOUNCE_FILE} 异常: {e}")
+        return {}
+
+    def _save_debounce_cache(self):
+        """持久化保存防抖记录到本地 JSON"""
+        try:
+            DEBOUNCE_FILE.write_text(json.dumps(self._sent_cache, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"保存防抖缓存 {DEBOUNCE_FILE} 失败: {e}")
 
     def _load_config(self) -> Dict[str, Any]:
         """加载推送配置，支持从环境变量与本地 json 读取"""
         default_config = {
             "enabled": True,
-            "debounce_seconds": 600,
+            "debounce_seconds": 7200,
             "channels": {
                 # 1. 微信端直推 (免装新App)
                 "wxpusher_app_token": os.environ.get("WXPUSHER_APP_TOKEN", ""),
@@ -70,26 +88,75 @@ class MobilePushNotifier:
                 pass
         return default_config
 
-    def _is_duplicate(self, dedup_key: str, force: bool = False) -> bool:
+    def _is_duplicate(
+        self,
+        dedup_key: str,
+        level: str = "",
+        score: float = 0.0,
+        is_resonance: bool = False,
+        force: bool = False
+    ) -> bool:
         if force:
+            self._record_sent(dedup_key, level, score, is_resonance)
             return False
+
         now = time.time()
-        last_time = self._sent_cache.get(dedup_key, 0)
-        if now - last_time < self.debounce_seconds:
+        record = self._sent_cache.get(dedup_key, {})
+        if not isinstance(record, dict):
+            record = {"time": float(record) if record else 0.0, "level": "", "score": 0.0, "resonance": False}
+
+        last_time = float(record.get("time", 0.0))
+        last_level = str(record.get("level", ""))
+        last_score = float(record.get("score", 0.0))
+        last_res = bool(record.get("resonance", False))
+
+        # 状态恶化跃迁突破防抖检查：
+        # 1. 之前未共振，当前触发共振
+        # 2. 综合分相比上次飙升 >= 10分
+        # 3. 状态等级升级至高危共振警戒
+        is_breakthrough = False
+        if is_resonance and not last_res:
+            is_breakthrough = True
+        elif score - last_score >= 10.0:
+            is_breakthrough = True
+        elif "高危共振" in level and "高危共振" not in last_level:
+            is_breakthrough = True
+
+        if not is_breakthrough and (now - last_time < self.debounce_seconds):
             return True
-        self._sent_cache[dedup_key] = now
+
+        self._record_sent(dedup_key, level, score, is_resonance)
         return False
 
-    def send_alert(self, title: str, content: str, level: str = "ALERT", force: bool = False) -> Dict[str, Any]:
+    def _record_sent(self, dedup_key: str, level: str, score: float, is_resonance: bool):
+        self._sent_cache[dedup_key] = {
+            "time": time.time(),
+            "level": level,
+            "score": score,
+            "resonance": is_resonance,
+            "formatted_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        self._save_debounce_cache()
+
+    def send_alert(
+        self,
+        title: str,
+        content: str,
+        level: str = "ALERT",
+        score: float = 0.0,
+        is_resonance: bool = False,
+        force: bool = False
+    ) -> Dict[str, Any]:
         """
-        统一发送手机端信息推送
+        统一发送手机端信息推送 (带持久化防抖与恶化跃迁穿透)
         """
         if not self.config.get("enabled", True):
             return {"ok": False, "msg": "推送功能已全局禁用"}
 
         dedup_key = f"{level}:{title}"
-        if self._is_duplicate(dedup_key, force=force):
-            return {"ok": False, "msg": f"命中防抖窗口({self.debounce_seconds}秒)，暂不重复推送"}
+        if self._is_duplicate(dedup_key, level=level, score=score, is_resonance=is_resonance, force=force):
+            return {"ok": False, "msg": f"命中防抖窗口({self.debounce_seconds}秒)，且无恶化跃迁，暂不重复推送"}
+
 
         channels = self.config.get("channels", {})
         results = {}

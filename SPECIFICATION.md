@@ -1,5 +1,5 @@
 # 美股科技链与宏观流动性双频监控系统：项目与技术实现说明文档
-> **文档版本**：v2.0 · 2026-11-02  
+> **文档版本**：v2.1 (审查修复版) · 2026-11-02  
 > **项目路径**：`C:\ai\antigravity\meigujiankong`  
 > **远程仓库**：`https://github.com/vegayan2024/meigujiankong.git`  
 > **核心触发词**：`美股监控`（与 A股监控 `jiankong` 项目严格隔离）
@@ -13,9 +13,11 @@
 
 ### 1.2 解决的核心痛点
 1. **单一指标盲区**：纯看标普估值滞后于科技股踩踏；纯看个股K线容易忽略美债倒挂/解挂等大周期系统性危机。
-2. **海内外数据网络延迟与单点故障**：境外金融数据源国内访问不稳定，缺乏高可用降级链路。
-3. **缺少与国内衍生品的联动映射**：现有海外开源监控工具仅停留在美股自身观察，没有衔接国内中证1000/IM期指等实操对冲工具。
-4. **移动端警报断层**：桌面端大屏无法做到 7x24 小时随身无感预警。
+2. **海内外数据网络延迟与单点故障**：境外金融数据源国内访问不稳定，缺乏专业金融接口与多层降级链路。
+3. **数据透明与防伪**：严格遵循金融数据纪律，第一顺位对口直取（TuShare Pro / 同花顺 iFinD / 东方财富 / FRED），取不到的数据透明公示，严禁隐瞒、伪造或静默处理。
+4. **决策矩阵逻辑死区**：彻底消除状态空间盲区，采用完备互斥的五阶梯状态机，包含双频温和承压兜底。
+5. **缺少与国内衍生品的联动映射**：衔接国内中证1000/IM期指与MO期权等实操对冲工具，增加年化深度贴水基差风控提示。
+6. **移动端警报断层与骚扰**：集成持久化 2 小时防抖与恶化跃迁穿透机制，7x24 小时即时推送。
 
 ---
 
@@ -25,29 +27,29 @@
 
 ```mermaid
 flowchart TD
-    subgraph DataLayer [数据接入层 (多源与降级链路)]
-        D1[雅虎财经 yfinance] -->|日线OHLCV / QQQ期权链| S_Data[短频微观行情]
-        D2[东方财富 API (国内直连)] -->|美债 2Y/10Y 利差| M_Data[宏观长频数据]
-        D3[CNN Dataviz API] -->|恐慌与贪婪指数| M_Data
-        D4[yfinance ^TNX] -.->|美债降级备用| M_Data
+    subgraph DataLayer [数据接入层 (专业金融接口与顺位降级链路)]
+        TS[TuShare Pro / iFinD] -->|第一顺位: us_tycr / us_daily| S_Data[短频微观行情]
+        EM[东方财富 / FRED CSV] -->|美债 2Y/10Y 利差| M_Data[宏观长频数据]
+        CNN[CNN Dataviz API] -->|恐慌与贪婪指数| M_Data
+        YF[yfinance 核心期权链] -->|7~25DTE / 0.9~1.1Spot / OI兜底| S_Data
     end
 
     subgraph EngineLayer [量化计算与风险评估引擎 (monitor_engine.py)]
         S_Data --> ShortModel[战术级高频模型 (0-100分)]
         M_Data --> MacroModel[战略级宏观模型 (0-100分)]
         
-        ShortModel --> F1[欧奈尔派发日]
-        ShortModel --> F2[龙头量价背离]
-        ShortModel --> F3[半导体RS动能]
-        ShortModel --> F4[期权PCR倾斜]
+        ShortModel --> F1[欧奈尔派发日 (带V反重置)]
+        ShortModel --> F2[龙头量价背离 (带动能衰竭/RSI确认)]
+        ShortModel --> F3[半导体RS动能 (连续分段+背离惩罚)]
+        ShortModel --> F4[期权PCR倾斜 (成交量与持仓量自适应)]
 
-        MacroModel --> M1[美债10Y-2Y利差]
+        MacroModel --> M1[美债10Y-2Y利差 (路径感知+安全兜底)]
         MacroModel --> M2[标普200日均线乖离]
         MacroModel --> M3[宏观贪婪恐慌]
 
         ShortModel & MacroModel --> Fusion[双频加权融合与极端共振检测]
         Fusion --> TotalScore[综合系统性风险总分 (0-100)]
-        Fusion --> Guide[A股/中证1000 IM 对冲决策矩阵]
+        Fusion --> Guide[完备无死区 A股/中证1000 IM 对冲决策矩阵]
     end
 
     subgraph PresentationLayer [展示与交互层]
@@ -56,7 +58,7 @@ flowchart TD
     end
 
     subgraph PushLayer [手机端多通道推送系统 (push_notifier.py)]
-        CronChecker & StreamlitUI --> Notifier[MobilePushNotifier (带10分钟防抖)]
+        CronChecker & StreamlitUI --> Notifier[MobilePushNotifier (带持久化2小时防抖+恶化穿透)]
         Notifier --> P1[🍎 iOS Bark 锁屏弹窗]
         Notifier --> P2[💬 微信 PushPlus / Server酱]
         Notifier --> P3[💼 企业微信 / 钉钉 / 飞书]
@@ -67,184 +69,154 @@ flowchart TD
 
 | 文件路径 | 核心职责 | 依赖与技术栈 |
 | :--- | :--- | :--- |
-| [`data_loader.py`](file:///C:/ai/antigravity/meigujiankong/data_loader.py) | 数据获取层：纳指/龙头ETF数据、期权PCR、东方财富美债直连、CNN情绪 | `yfinance`, `requests`, `pandas` |
-| [`monitor_engine.py`](file:///C:/ai/antigravity/meigujiankong/monitor_engine.py) | 算法核心层：高频战术模型、宏观战略模型、共振算法、A股对冲指引 | `numpy`, `pandas` |
-| [`push_notifier.py`](file:///C:/ai/antigravity/meigujiankong/push_notifier.py) | 推送适配层：iOS Bark、微信PushPlus/Server酱、企微/钉钉/飞书推送与防抖 | `requests`, `json` |
-| [`app.py`](file:///C:/ai/antigravity/meigujiankong/app.py) | 前端大屏：左右双栏独立呈现、全维雷达图、动能折线图、推送即时配置与测试 | `streamlit`, `plotly` |
-| [`cron_alert.py`](file:///C:/ai/antigravity/meigujiankong/cron_alert.py) | 后台免值守脚本：15分钟自动化巡检，风险 $\ge 70$ 或共振时手机推送 | 纯 Python 标准库调用 |
-| [`push_config.json`](file:///C:/ai/antigravity/meigujiankong/push_config.json) | 本地密钥与通道配置模板（已被 Git 忽略敏感数据） | JSON |
-| [`run.bat`](file:///C:/ai/antigravity/meigujiankong/run.bat) | Windows 快速启动脚本（指定 `python -m` 避免环境污染） | Windows 批处理 |
+| [`data_loader.py`](file:///C:/ai/antigravity/meigujiankong/data_loader.py) | 数据获取层：金融数据接口（TuShare Pro、iFinD、东财、FRED、yfinance、CNN），带盘中成交量折算与期权清洗 | `tushare`, `yfinance`, `requests`, `pandas` |
+| [`monitor_engine.py`](file:///C:/ai/antigravity/meigujiankong/monitor_engine.py) | 算法核心层：高频战术模型（带V反重置与动能确认）、宏观战略模型（路径感知）、共振算法、五阶梯完备对冲指引 | `numpy`, `pandas` |
+| [`push_notifier.py`](file:///C:/ai/antigravity/meigujiankong/push_notifier.py) | 推送适配层：iOS Bark、微信PushPlus/Server酱、企微/钉钉/飞书推送，JSON持久化2小时防抖与恶化跃迁穿透 | `requests`, `json` |
+| [`app.py`](file:///C:/ai/antigravity/meigujiankong/app.py) | 前端大屏：左右双栏独立呈现、数据链路透明公示、全维雷达图、推送即时配置与测试 | `streamlit`, `plotly` |
+| [`cron_alert.py`](file:///C:/ai/antigravity/meigujiankong/cron_alert.py) | 后台免值守脚本：15分钟自动化巡检，风险 $\ge 70$ 或共振时手机推送，UTF-8控制台防崩溃 | 纯 Python 标准库调用 |
+| [`push_config.json`](file:///C:/ai/antigravity/meigujiankong/push_config.json) | 本地推送密钥配置模板（敏感 Token 存入 `.env`，已被 Git 忽略） | JSON |
+| [`run.bat`](file:///C:/ai/antigravity/meigujiankong/run.bat) | Windows 快速启动脚本（设置 `chcp 65001` 与 `PYTHONIOENCODING=utf-8`） | Windows 批处理 |
 
 ---
 
 ## 3. 双频指标量化建模与数学实现规范
 
-系统分为**战术级高频短期信号（权重 55%）**与**战略级中长频宏观信号（权重 45%）**，各因子统一输出 0~100 分（分数越高代表风险越极端）。
+系统分为**战术级高频短期信号（权重 55%）**与**战略级中长频宏观信号（权重 45%）**，各因子统一输出 0~100 分。
 
 ### 3.1 ⚡ 战术级高频短期信号 (Short-Term Tactical Signals)
 
-#### 因子 1: 欧奈尔机构派发日统计 (Distribution Days)
+#### 因子 1: 欧奈尔机构派发日统计 (Distribution Days with V-Reversal Reset)
 - **输入**：纳指 100 ETF (`QQQ`) 过去 25 个交易日日线序列。
-- **派发日定义**：
-  $$\text{DistDay}_t = \begin{cases} 1, & \text{pct\_change}(Close_t) \le -0.2\% \quad \text{and} \quad Volume_t > Volume_{t-1} \\ 0, & \text{otherwise} \end{cases}$$
+- **派发日定义**：当日收盘下跌 $\ge 0.2\%$，且成交量较前一日放大。
+- **V型强反转重置机制**：
+  若最新收盘价相比过去 25 日最低收盘价 $Close_{t_{\text{low}}}$ 累计反弹 $\ge 6.0\%$，且站上 20 日均线（$Close_t > \text{SMA}_{20}$），则 $t_{\text{low}}$ 之前发生的旧派发日权重减半（按 0.5 次计）。
 - **打分函数**：
-  $$S_{\text{dist}} = \min\left(\frac{\sum_{i=0}^{24} \text{DistDay}_{t-i}}{6.0}, 1.0\right) \times 100$$
-  *(注：25日内累计达到 5~6 次放量下跌，判定为高位机构集中出逃)*。
+  $$S_{\text{dist}} = \min\left(\frac{N_{\text{effective}}}{6.0}, 1.0\right) \times 100$$
 
-#### 因子 2: AI 科技龙头量价顶背离率 (Volume Divergence)
+#### 因子 2: AI 科技龙头量价顶背离率 (Volume Divergence with Momentum Exhaustion)
 - **标的池**：`NVDA`, `MSFT`, `AVGO`, `GOOGL`, `TSM`。
-- **背离判定条件**（针对每只标的）：
-  $$\text{NearTop} = \left(\frac{Close_t}{\max_{i \in [0, 19]} Close_{t-i}}\right) \ge 0.97$$
-  $$\text{VolExhausted} = \left(\frac{\text{SMA}_{20}(Volume_t)}{\max_{i \in [0, 59]} \text{SMA}_{20}(Volume_{t-i})}\right) \le 0.75$$
-- **打分函数**：
-  $$S_{\text{vol}} = \frac{\text{Count}(\text{NearTop} \wedge \text{VolExhausted})}{\text{TotalTickers}} \times 100$$
-  *(注：高位股价离峰值不足 3%，但成交均量萎缩超过 25%，反映无量虚拉出货)*。
+- **背离判定条件**：
+  1. $\text{NearTop} = (Close_t / \max_{20} Close) \ge 0.97$
+  2. $\text{VolExhausted} = (\text{SMA}_{20}(Vol_t) / \max_{60} \text{SMA}_{20}(Vol)) \le 0.75$
+  3. **动能衰竭确认**（满足其一）：
+     - 近 5 日内冲高回落上影线天数 $\ge 2$（单日 $(High - Close)/(High - Low + 1e-6) > 0.6$）；
+     - 或 14 日 RSI 相比近 20 日最高 RSI 回落超过 5 点（价格高位而 RSI 见顶回落）。
+- **打分函数**：$S_{\text{vol}} = (\text{Count(Divergence)} / \text{TotalTickers}) \times 100$。
 
-#### 因子 3: 半导体主线相对强弱背离 (RS Divergence)
-- **输入**：领涨半导体 ETF (`SMH`) 与标普 500 (`SPY`) 过去 20 个交易日比值 $RS_t = Close_{\text{SMH}, t} / Close_{\text{SPY}, t}$。
-- **斜率计算**：$Slope_{\text{RS}} = \frac{RS_t - RS_{t-19}}{RS_{t-19}}$，$Slope_{\text{SPY}} = \frac{Close_{\text{SPY}, t} - Close_{\text{SPY}, t-19}}{Close_{\text{SPY}, t-19}}$。
-- **打分规则**：
-  $$S_{\text{rs}} = \begin{cases} 
-  \min(|Slope_{\text{RS}}| \times 2000, 100), & Slope_{\text{SPY}} \ge 0 \ \text{and} \ Slope_{\text{RS}} < 0 \ (\text{大盘涨但芯片弱}) \\
-  80, & Slope_{\text{RS}} < -0.05 \ (\text{芯片相对崩塌}) \\
-  \max\left(0, \left(1 - \frac{Slope_{\text{RS}} + 0.05}{0.1}\right) \times 50\right), & \text{otherwise}
+#### 因子 3: 半导体主线相对强弱背离 (RS Divergence: Continuous Linear + Penalty)
+- **输入**：`SMH` 与 `SPY` 20 日比值 $RS = Close_{\text{SMH}} / Close_{\text{SPY}}$ 之 20 日斜率 $Slope_{\text{RS}}$ 与大盘斜率 $Slope_{\text{SPY}}$。
+- **连续分段打分**：
+  $$Base_{\text{rs}} = \begin{cases}
+  10.0, & Slope_{\text{RS}} \ge 0.05 \\
+  10.0 + \frac{0.05 - Slope_{\text{RS}}}{0.05} \times 25.0, & 0 \le Slope_{\text{RS}} < 0.05 \quad (10 \sim 35\text{分}) \\
+  35.0 + \frac{|Slope_{\text{RS}}|}{0.08} \times 50.0, & -0.08 \le Slope_{\text{RS}} < 0 \quad (35 \sim 85\text{分}) \\
+  \min\left(85.0 + \frac{|Slope_{\text{RS}}| - 0.08}{0.04} \times 15.0, 100.0\right), & Slope_{\text{RS}} < -0.08
   \end{cases}$$
+- **顶背离惩罚**：若 $Slope_{\text{SPY}} > 0.01$ 且 $Slope_{\text{RS}} < -0.02$，额外增加 $Penalty_{\text{div}} = 15.0$ 分。
+- 最终得分：$S_{\text{rs}} = \min(Base_{\text{rs}} + Penalty_{\text{div}}, 100.0)$。
 
-#### 因子 4: QQQ 近月期权 Put/Call Ratio (PCR 异动)
-- **输入**：QQQ 近月到期平值及虚值期权成交总量之比 $PCR = \frac{\sum PutVol}{\sum CallVol}$。
-- **分段打分函数**：
-  $$S_{\text{pcr}} = \begin{cases}
-  15.0, & PCR \le 0.7 \ (\text{极度多头看涨}) \\
-  30.0 + (PCR - 0.7) \times 100, & 0.7 < PCR \le 1.0 \ (\text{中性均衡}) \\
-  60.0 + (PCR - 1.0) \times 100, & 1.0 < PCR \le 1.3 \ (\text{看跌对冲增加}) \\
-  100.0, & PCR > 1.3 \ (\text{极端恐慌对冲踩踏})
-  \end{cases}$$
+#### 因子 4: QQQ 期权 Put/Call Ratio (Filtered PCR)
+- **到期日过滤**：选取距离当前 7~25 天的期权，剔除 0DTE~3DTE 末日轮噪音。
+- **行权价过滤**：保留现价 $[0.90 \times P_{\text{spot}}, 1.10 \times P_{\text{spot}}]$ 范围。
+- **成交量与持仓量自适应**：
+  若成交总量 $\ge 1000$ 张且 $CallVol > 0$，使用成交量 PCR；若非交易时段成交量清零，自动无缝降级为持仓量 $PCR_{\text{OI}} = \sum PutOI / \max(\sum CallOI, 1)$。
+- **打分规则**：$\le 0.7$ 为 15 分，$(0.7, 1.0]$ 为 30~60分，$(1.0, 1.3]$ 为 60~90分，$> 1.3$ 为 100 分。
 
 ---
 
 ### 3.2 🌐 战略级中长频宏观信号 (Macro Signals)
 
-#### 因子 5: 美债 10Y-2Y 收益率曲线利差 (Yield Curve Spread)
-- **输入**：美债 10年期收益率 $Y_{10}$ 与 2年期收益率 $Y_2$ 之差 $Spread = Y_{10} - Y_2$。
-- **金融周期逻辑与打分映射**：
+#### 因子 5: 美债 10Y-2Y 收益率曲线利差 (Yield Curve Spread with Path-Sensing)
+- **输入**：$Spread = Y_{10} - Y_2$ 及历史利差序列。
+- **打分映射**：
   $$S_{\text{spread}} = \begin{cases}
-  85.0, & Spread < -0.5\% \ (\text{深度倒挂：衰退蓄力期}) \\
-  65.0, & -0.5\% \le Spread < 0\% \ (\text{轻度倒挂：紧缩期}) \\
-  75.0, & 0\% \le Spread < 0.35\% \ (\text{倒挂后解挂走陡：高危衰退落地期}) \\
+  30.0, & \text{is\_fallback = True (兜底安全基准，严禁触发共振)} \\
+  85.0, & Spread < -0.35\% \ (\text{强确定性深度倒挂}) \\
+  65.0, & -0.35\% \le Spread < 0\% \ (\text{轻度倒挂}) \\
+  75.0, & 0\% \le Spread < 0.35\% \ \text{且历史上曾深度倒挂} \ (\text{高危牛陡解挂衰退落地}) \\
+  55.0, & 0\% \le Spread < 0.35\% \ \text{且无深度倒挂历史} \ (\text{温和紧缩/软着陆观察期}) \\
   30.0, & 0.35\% \le Spread < 1.0\% \ (\text{正常陡峭：平稳扩张}) \\
   20.0, & Spread \ge 1.0\% \ (\text{深度陡峭：宽松期})
   \end{cases}$$
 
 #### 因子 6: 标普 500 (SPY) 200日均线乖离率 (SMA200 Deviation)
-- **输入**：标普 500 复权收盘价与 200 日简单移动均线偏离度 $Dev\% = \frac{Close_t - \text{SMA}_{200}(Close_t)}{\text{SMA}_{200}(Close_t)} \times 100$。
-- **打分规则**：
-  $$S_{\text{sma}} = \begin{cases}
-  90.0, & Dev\% > 18\% \ (\text{大周期严重超买悬空}) \\
-  70.0, & 12\% < Dev\% \le 18\% \ (\text{过热状态}) \\
-  35.0, & 2\% \le Dev\% \le 12\% \ (\text{慢牛良性运行}) \\
-  25.0, & -3\% \le Dev\% < 2\% \ (\text{均线回踩支撑}) \\
-  55.0, & -10\% \le Dev\% < -3\% \ (\text{均线下破弱势}) \\
-  80.0, & Dev\% < -10\% \ (\text{深度破位熊市流动性缺失})
-  \end{cases}$$
+- **打分规则**：$> 18\%$ 为 90 分（极度超买）；$12\% \sim 18\%$ 为 70 分；$2\% \sim 12\%$ 为 35 分（慢牛）；$-3\% \sim 2\%$ 为 25 分；$-10\% \sim -3\%$ 为 55 分；$< -10\%$ 为 80 分（破位熊市）。
 
 #### 因子 7: CNN 恐慌与贪婪指数 (Fear & Greed Index)
-- **输入**：CNN 官方官方 0~100 情绪指数。
-- **反向打分函数**：
-  $$S_{\text{fg}} = \begin{cases}
-  95.0, & FG \ge 80 \ (\text{极度贪婪：顶部狂热，反向极度危险}) \\
-  65.0, & 60 \le FG < 80 \ (\text{贪婪偏热}) \\
-  35.0, & 40 \le FG < 60 \ (\text{中性安全}) \\
-  45.0, & 20 \le FG < 40 \ (\text{恐慌释放中}) \\
-  70.0, & FG < 20 \ (\text{极度恐慌踩踏})
-  \end{cases}$$
+- **反向打分**：$\ge 80$ 为 95 分（极度贪婪见顶）；$60 \sim 80$ 为 65 分；$40 \sim 60$ 为 35 分；$20 \sim 40$ 为 45 分；$< 20$ 为 70 分（踩踏出清）。
 
 ---
 
-### 3.3 极端多因子共振检测 (Resonance Detection) 与综合评分
+### 3.3 极端多因子共振检测与融合总分
 
-1. **短频得分聚合**：
-   $$Score_{\text{short}} = 0.30 \cdot S_{\text{dist}} + 0.25 \cdot S_{\text{vol}} + 0.25 \cdot S_{\text{rs}} + 0.20 \cdot S_{\text{pcr}}$$
-2. **中频宏观得分聚合**：
-   $$Score_{\text{macro}} = 0.40 \cdot S_{\text{spread}} + 0.30 \cdot S_{\text{sma}} + 0.30 \cdot S_{\text{fg}}$$
-3. **极端共振判定机制**：
-   遍历上述 7 个因子的分值，统计进入极高危阈值（$S_i \ge 75$）的因子数量 $N_{\text{extreme}}$：
-   $$Boost_{\text{resonance}} = \begin{cases} 
-   12.0, & N_{\text{extreme}} \ge 4 \\ 
-   8.0, & N_{\text{extreme}} = 3 \\ 
-   0.0, & N_{\text{extreme}} < 3 
-   \end{cases}$$
+1. **短频得分聚合**：$Score_{\text{short}} = 0.30 S_{\text{dist}} + 0.25 S_{\text{vol}} + 0.25 S_{\text{rs}} + 0.20 S_{\text{pcr}}$
+2. **中频宏观聚合**：$Score_{\text{macro}} = 0.40 S_{\text{spread}} + 0.30 S_{\text{sma}} + 0.30 S_{\text{fg}}$
+3. **极端共振判定**：统计进入极高危阈值（$S_i \ge 75$）的真实因子数 $N_{\text{extreme}}$（严禁兜底数据计入）：
+   - $N_{\text{extreme}} \ge 4$：共振加分 $+12.0$；
+   - $N_{\text{extreme}} = 3$：共振加分 $+8.0$；
+   - $N_{\text{extreme}} < 3$：共振加分 $0.0$。
 4. **综合系统性风险总分**：
-   $$Score_{\text{total}} = \min\left(Score_{\text{short}} \times 0.55 + Score_{\text{macro}} \times 0.45 + Boost_{\text{resonance}}, 100.0\right)$$
+   $$Score_{\text{total}} = \min(Score_{\text{short}} \times 0.55 + Score_{\text{macro}} \times 0.45 + Boost_{\text{resonance}}, 100.0)$$
 
 ---
 
-## 4. A 股与中证1000/IM期指对冲决策矩阵
+## 4. A 股与中证1000/IM期指对冲决策矩阵 (完备五阶梯状态机)
 
-根据双频信号状态组合，系统向终端与手机推送以下四象限实操推演指令：
-
-| 双频状态象限 | 触发判定条件 | 宏观与微观诊断 | 中证1000 (IM期指) 对冲决策 |
+| 状态等级 | 触发判定条件 | 宏观与微观诊断 | 中证1000 (IM期指) 对冲决策 |
 | :--- | :--- | :--- | :--- |
-| **🚨 高危共振警戒** | $Score_{\text{total}} \ge 70$ 或 触发共振 | 短频筹码踩踏与中频宏观紧缩共振，美股见顶下杀具有强破坏力与传染性。 | **坚决防御/右侧做空**：A股早盘严禁盲目抄底；盘中若回抽5日均线受阻，坚决在右侧开空 IM 或配置看跌期权保护现货敞口。 |
-| **⚠️ 短线战术分歧** | $Score_{\text{short}} \ge 65$ 且 $Score_{\text{macro}} < 50$ | 科技链高位量价背离但宏观基本面平稳，定性为局部估值消化与正常洗盘。 | **低开抗跌/日内反弹**：A股早盘低开易出现日内 V 型修复，切忌恐慌杀跌追空，可于日内支撑位逢低寻找错杀机会。 |
-| **⏳ 宏观阴霾蓄力** | $Score_{\text{short}} < 50$ 且 $Score_{\text{macro}} \ge 65$ | 利差倒挂/均线悬空等长周期隐患积累，但科技龙头尚未全面放量下杀。 | **收缩杠杆/战略防守**：不可盲目加高估值杠杆，IM 多头宜逢高逐步收缩风险暴露，提升组合防御性（红利/低估值）。 |
-| **🟢 双频低危健康** | 综合得分 $< 50$ | 高频流动性充沛，宏观无系统性衰退风险。 | **做多成长/持仓待涨**：外部噪音可完全忽略，聚焦国内产业主线，持有 IM 多头底仓。 |
+| **🚨 高危共振警戒** | $Score_{\text{total}} \ge 70$ 或 触发共振 | 短频筹码踩踏与中频宏观紧缩共振，美股见顶下杀具有强破坏力与传染性。 | **坚决防御/右侧做空**：A股早盘严禁盲目抄底；盘中若回抽5日均线受阻，坚决在右侧开空 IM 或配置看跌期权保护现货敞口。<br><br>⚠️ **【基差风控提示】** 开空 IM 期指前务必核查当前年化贴水率；若早盘大幅低开导致 IM 年化贴水率 > 15%，严禁盲目追空期指以防基差收敛逼空，应优先改用买入中证1000看跌期权（MO）构建熊市价差进行保护。 |
+| **⚠️ 短线战术分歧** | $Score_{\text{total}} < 70$ 且未共振，且 $Score_{\text{short}} \ge 65$ 且 $Score_{\text{macro}} < 55$ | 科技链高位量价背离但宏观基本面平稳，定性为局部估值消化与正常洗盘。 | **低开抗跌/日内反弹**：A股早盘低开易出现日内 V 型修复，切忌恐慌杀跌追空，可于日内支撑位逢低寻找错杀机会。 |
+| **⏳ 宏观阴霾蓄力** | $Score_{\text{total}} < 70$ 且未共振，且 $Score_{\text{macro}} \ge 65$ 且 $Score_{\text{short}} < 55$ | 利差倒挂/均线悬空等长周期隐患积累，但科技龙头尚未全面放量下杀。 | **收缩杠杆/战略防守**：不可盲目加高估值杠杆，IM 多头宜逢高逐步收缩风险暴露，提升组合防御性（红利/低估值）。 |
+| **🟡 双频温和承压** *(新增兜底象限)* | $50 \le Score_{\text{total}} < 70$ 且不满足上述单边分歧条件 | 短频筹码与中频宏观均处于中等偏紧状态，市场缺乏单边突破动能，波动率中枢抬升。 | **【控制仓位/网格波段】** A股与中证1000易陷入宽幅震荡，IM 期指不宜追涨杀跌；建议将多头敞口降至半仓以下，或采用买平值看跌期权（MO）构建领口策略（Collar）锁住尾部风险。 |
+| **🟢 双频低危健康** | $Score_{\text{total}} < 50$ | 高频流动性充沛，宏观无系统性衰退风险。 | **做多成长/持仓待涨**：外部噪音可完全忽略，聚焦国内产业主线，持有 IM 多头底仓。 |
 
 ---
 
-## 5. 外部数据源容灾与网络降级架构
+## 5. 外部数据源与金融接口顺位规范
 
-为保障国内网络环境下长期稳定运行，系统针对所有关键数据实现了多层兜底链：
+为保障数据真实性，严格遵循数据接口对口直取原则：
 
 1. **美债收益率数据链路**：
-   - **第一顺位（首选）**：东方财富数据中心 REST API（国内直连、无代理依赖、0.8 秒响应）；
-   - **第二顺位（降级）**：yfinance `^TNX` 端点；
-   - **第三顺位（兜底）**：内置基线平坦利差估算（$Spread = 0.20\%$），保证计算流程不报错。
-2. **市场情绪指数链路**：
-   - **主入口**：CNN 官方 `production.dataviz.cnn.io` 接口，注入防 418 请求头；
-   - **降级**：网络超时抛错时捕获异常，回退为 50.0 中性值。
-3. **个股与期权行情链路**：
-   - 提取日线拉取 1 年数据，满足 200 日均线计算样本量；
-   - 雅虎期权链偶发 30 秒超时抛出异常时，安全回退为 1.0 中性 PCR，杜绝主进程崩溃。
+   - **第一顺位**：TuShare Pro `us_tycr`（美债收益率曲线全期限日度数据）；
+   - **第二顺位**：同花顺 iFinD EDB / 东方财富数据中心 REST API；
+   - **第三顺位**：FRED 公开 CSV (`DGS10` 与 `DGS2`)；
+   - **兜底基线**：锁定利差 $0.55\%$，固定安全分 30.0，标记 `is_fallback: True`，禁止计入共振。
+2. **个股与 ETF 日线行情**：
+   - **第一顺位**：TuShare Pro `us_daily`（美股日线）；
+   - **降级顺位**：Yahoo Finance (`yfinance`)，带美东交易时段盘中成交量折算预估（Volume Projection）。
+3. **期权与情绪数据**：
+   - **期权 PCR**：yfinance 期权链（7~25 DTE，0.90~1.10 Spot 行权价，成交量不足时持仓量兜底）。
+   - **恐慌贪婪**：CNN 官方 Dataviz 接口。
 
 ---
 
-## 6. 移动端推送系统技术规范 (`push_notifier.py`)
+## 6. 移动端推送与持久化防抖 (`push_notifier.py`)
 
-### 6.1 支持通道协议
-1. **iOS Bark**：向 `https://api.day.app/{key}/` 发送 POST 请求，带分组 `美股流动性监控` 与警报音频 `alarm.caf`。
-2. **微信直推 (PushPlus / Server酱)**：调用官方 REST 接口，推送标准 Markdown 渲染卡片。
-3. **企业微信 / 钉钉 / 飞书**：Webhook 机器人通道，格式化为卡片或 Markdown 消息。
-
-### 6.2 智能防抖设计 (Debounce)
-- 每个警报以 `{level}:{title}` 作为哈希 Key 存入内存滑动窗口；
-- 默认设置 600 秒（10分钟）防抖阈值；在窗口期内的相同告警级别静默忽略，防止高频巡检对交易员手机造成骚扰。
+1. **本地 JSON 文件持久化防抖**：
+   防抖记录保存于项目根目录 `.push_debounce_cache.json`（已被 Git 忽略），跨进程永久生效。
+2. **2 小时默认防抖窗口**：
+   `debounce_seconds` 设为 7200 秒（2 小时），解决 15 分钟巡检重复骚扰痛点。
+3. **状态恶化跃迁穿透机制**：
+   若当前巡检中：
+   - 触发了多因子极端共振（而上一次未共振）；
+   - 或综合风险评分飙升 $\ge 10$ 分；
+   - 或状态等级跃迁升级为高危共振警戒；
+   系统无视 2 小时防抖窗口，立即无条件强行向手机分发告警。
 
 ---
 
-## 7. 质量审计与自动化验证清单
+## 7. 自动化验证验收命令集
 
-任何其他工具、LLM 或代码审核代理可通过以下步骤自检代码完备性：
-
-### 7.1 本地测试命令集
 ```powershell
-# 1. 验证全部 Python 依赖完备
-python -c "import streamlit, streamlit_autorefresh, yfinance, pandas, numpy, plotly, requests; print('PASS: 依赖库正常')"
+# 1. 验证 UTF-8 编码与 Emoji 输出在 Windows 终端不崩溃
+python -c "from cron_alert import run_check; run_check(force_alert=False)"
 
-# 2. 验证东方财富美债国内直连接口
-python -c "from data_loader import fetch_treasury_yields; t = fetch_treasury_yields(); assert t['us_10y'] > 0; print('PASS: 美债数据正常:', t)"
+# 2. 验证决策矩阵全空间完备性（无死区测试）
+python -c "from monitor_engine import evaluate_all; r = evaluate_all(); print('PASS: 决策矩阵状态 ->', r['action_guide']['level'])"
 
-# 3. 验证 CNN 恐慌与贪婪接口
-python -c "from data_loader import fetch_fear_and_greed; fg = fetch_fear_and_greed(); assert 0 <= fg['score'] <= 100; print('PASS: CNN情绪正常:', fg)"
+# 3. 验证持久化防抖缓存文件生成与 2 小时防抖生效
+python -c "import os; from push_notifier import MobilePushNotifier; n = MobilePushNotifier(); print('PASS: 防抖窗口 =', n.debounce_seconds, '秒')"
 
-# 4. 验证核心风险引擎计算逻辑与共振
-python -c "from cron_alert import run_check; run_check(force_alert=True); print('PASS: 双频引擎与推送闭环正常')"
-
-# 5. 验证 Streamlit 前端渲染与接口无阻塞
-python -m streamlit run app.py --server.headless true --server.port 8502
+# 4. 验证兜底模式下美债因子不会误触发 >=75 分共振
+python -c "from monitor_engine import score_yield_curve; s, status = score_yield_curve(0.55); assert s < 50, f'Fallback score too high: {s}'; print('PASS: 美债兜底安全分 =', s, status)"
 ```
-
-### 7.2 核心断言点
-- [x] `monitor_engine.py` 数据切片长度小于 2 时不抛出 `IndexError`。
-- [x] 控制台输出与日志字符串移除了可能在 Windows GBK 环境下崩溃的多字节字符。
-- [x] Streamlit 页面左右双栏分立，左侧为高频战术信号，右侧为中长期宏观信号。
-- [x] 启动脚本统一使用 `python -m pip` 与 `python -m streamlit`，彻底规避失效的 Python 路径干扰。
