@@ -1,15 +1,34 @@
-# 美股科技链与AI头部流动性拐点预警系统 (US AI Crash Monitor)
+# 美股科技链与宏观流动性双频风险监测系统 (US Stock Dual-Frequency Monitor)
 
-基于 Python + Streamlit 搭建的美股 AI 领涨股异动、市场宽度与流动性拐点监测工具，专为捕捉科技股局部见顶、流动性踩踏传导以及对冲 A 股（中证1000/IM）风险而设计。
+基于 Python + Streamlit 搭建的美股双频风险监测与对冲决策大屏。采用分层架构，清晰区分**战术级高频短期信号（微观流动性与科技筹码）**与**战略级中长频宏观信号（美债利差与大周期均线情绪）**，专为捕捉美股顶部流动性踩踏传导，并为 **A股（尤其是中证1000/IM期指）** 风险对冲提供量化推演依据。
 
 ---
 
-## 核心监测维度 (四维风险模型)
+## 核心监测维度 (双频双层模型)
 
-1. **欧奈尔机构派发日 (Distribution Days):** 追踪纳指 100 ETF (QQQ) 近 25 个交易日内“放量下跌”的频率（>=5 天触发高危）。
-2. **AI 龙头高位量价顶背离 (Volume Divergence):** 监测 NVDA, MSFT, AVGO, GOOGL, TSM 是否出现“价格贴近高点，但成交均量显著衰竭”的无量冲顶现象。
-3. **板块相对强弱背离 (RS Divergence):** 跟踪半导体核心 ETF (SMH) 相对标普 500 (SPY) 的相对强弱斜率，识别核心引擎是否失去动能。
-4. **期权 PCR 异动 (Put/Call Ratio):** 监控纳指近月期权平值/微虚值看跌期权买入拥挤度。
+### ⚡ 栏目一：高频战术级短线信号 (Tactical Short-Term Signals)
+1. **欧奈尔机构派发日 (Distribution Days):** 追踪纳指 100 ETF (QQQ) 近 25 个交易日内“放量下跌”频率（>=5 天触发高危）。
+2. **AI 龙头高位量价顶背离 (Volume Divergence):** 实时监测 NVDA、MSFT、AVGO、GOOGL、TSM 是否出现“股价触及20日高位但均量萎缩超25%”的无量冲顶。
+3. **半导体相对强弱背离 (RS Divergence):** 跟踪半导体核心 ETF (SMH) 相对标普 500 (SPY) 的动能斜率，判断科技领涨引擎是否熄火。
+4. **期权 PCR 异动 (Put/Call Ratio):** 监控 QQQ 近月微虚值看跌期权买入拥挤度与对冲烈度。
+
+### 🌐 栏目二：中长期战略级宏观信号 (Strategic Macro Signals)
+1. **美债 10Y-2Y 曲线利差 (Yield Curve Spread):** 基于**东方财富直连 API** 与备用降级链获取最新美债利差，监测深度倒挂与“倒挂后急剧走陡解挂”（教科书级衰退预警）。
+2. **标普 500 (SPY) 200 日均线乖离率 (SMA 200 Deviation):** 衡量大周期牛熊分水岭超买悬空度与破位风险。
+3. **CNN 恐慌与贪婪指数 (Fear & Greed Index):** 宏观反向情绪指标，识别极度贪婪见顶与恐慌出清。
+
+### 🔥 极端多因子共振检测 (Resonance Detection)
+当短频与中频中同时出现 $\ge 3$ 个因子突破极高危阈值（$\ge 75$分）时，系统自动激活非线性共振惩罚（额外 $+8 \sim +15$ 分），模拟黑天鹅踩踏效应。
+
+---
+
+## 🎯 A股与中证1000 (IM) 期指双频对冲联动矩阵
+
+大屏根据短频与中频两个维度的不同组合，提供明确的实操应对策略：
+- **短高 + 中高（高危共振）：** 系统性下杀风险极大，A股及 IM 期指易受连带踩踏，严禁盲目抄底，右侧反抽 5 日均线受阻时开空 IM 或买入看跌期权对冲；
+- **短高 + 中低（战术分歧）：** 美股科技局部休整，宏观健康。对 A 股表现为早盘情绪低开，低开释放后易出现日内 V 型修复，切忌恐慌追空；
+- **短低 + 中高（宏观阴霾）：** 处于钝化期，中长线不可盲目加高估值杠杆，逢高收缩敞口；
+- **短低 + 中低（双频健康）：** 外部环境平稳，忽略噪音，聚焦国内核心主线，持有成长底仓。
 
 ---
 
@@ -17,30 +36,19 @@
 
 ### 1. 安装依赖
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ### 2. 启动可视化仪表盘
 ```bash
-streamlit run app.py
+# 方式一: 双击 run.bat
+# 方式二: 命令行执行
+python -m streamlit run app.py
 ```
-终端会自动弹出本地浏览器页面（通常为 `http://localhost:8501`），支持每 10 分钟自动静默刷新。
+默认会在浏览器打开 `http://localhost:8501`。左右双栏分别呈现高频短期信号与中长期宏观信号。
 
 ### 3. (可选) 启动后台免值守自动巡检脚本
 ```bash
 python cron_alert.py
 ```
-可搭配企业微信或钉钉 Webhook，在风险评分突破 70 分时自动推送报警消息。
-
----
-
-## 快速推送到 GitHub
-如果你需要同步到远程仓库，在项目根目录下执行：
-```bash
-git init
-git add .
-git commit -m "feat: init meigujiankong risk monitor"
-git branch -M main
-git remote add origin https://github.com/vegayan2024/meigujiankong.git
-git push -u origin main
-```
+支持 Webhook 报警，当总评分 $\ge 70$ 分或触发多因子极端共振时自动推送对冲指引。

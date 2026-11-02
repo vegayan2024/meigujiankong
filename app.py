@@ -1,103 +1,233 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from data_loader import fetch_historical_data, fetch_put_call_ratio, AI_LEADERS, BENCHMARKS
+from data_loader import (
+    fetch_historical_data, 
+    fetch_put_call_ratio, 
+    fetch_treasury_yields, 
+    fetch_fear_and_greed,
+    AI_LEADERS, 
+    BENCHMARKS
+)
 from monitor_engine import CrashRiskEngine
 
 try:
     from streamlit_autorefresh import st_autorefresh
-    # 默认每 10 分钟静默自动刷新前端拉取数据
+    # 默认每 10 分钟自动刷新
     st_autorefresh(interval=10 * 60 * 1000, key="data_autorefresh")
 except Exception:
     pass
 
-st.set_page_config(page_title="AI & 美股流动性拐点监测终端", layout="wide")
+st.set_page_config(page_title="美股科技链与宏观流动性风险监测终端", layout="wide")
 
-st.title("🚨 美股科技链与AI头部流动性拐点预警系统")
-st.caption("监测维度: 欧奈尔机构派发日 (Distribution Days) | 龙头高位量价背离 | 科技相对强弱 (RS) | 衍生品 PCR 异动")
+st.title("🚨 美股科技链与宏观流动性双频风险监测终端")
+st.caption("分层架构：⚡ 战术级高频微观信号 (派发日/龙头量价背离/半导体RS/期权PCR) ✖ 🌐 战略级中长频宏观信号 (美债10Y-2Y曲线/200日均线乖离/CNN贪婪恐慌)")
 
 @st.cache_data(ttl=600)
 def load_all_market_data():
     all_tickers = AI_LEADERS + list(BENCHMARKS.values())
-    raw_data = fetch_historical_data(all_tickers, period="6mo")
+    raw_data = fetch_historical_data(all_tickers, period="1y")
     pcr = fetch_put_call_ratio("QQQ")
-    return raw_data, pcr
+    treasury = fetch_treasury_yields()
+    fear_greed = fetch_fear_and_greed()
+    return raw_data, pcr, treasury, fear_greed
 
-with st.spinner("正在从雅虎财经拉取最新日线行情及期权链数据..."):
-    data_dict, current_pcr = load_all_market_data()
+with st.spinner("正在从多源数据链路（雅虎财经、东方财富直连、CNN 官方）拉取最新行情与宏观数据..."):
+    data_dict, current_pcr, treasury_data, fear_greed_data = load_all_market_data()
 
-engine = CrashRiskEngine(data_dict, current_pcr)
+engine = CrashRiskEngine(data_dict, current_pcr, treasury_data, fear_greed_data)
 risk_result = engine.evaluate_overall_risk()
 
-score = risk_result["total_score"]
-details = risk_result["details"]
+total_score = risk_result["total_score"]
+short_score = risk_result["short_term_score"]
+macro_score = risk_result["macro_score"]
+resonance = risk_result["resonance"]
+s_details = risk_result["short_term_details"]
+m_details = risk_result["macro_details"]
+guide = risk_result["action_guide"]
 
-# 顶部指标栏
+# =============================================================================
+# 顶部总览卡片栏
+# =============================================================================
 c1, c2, c3, c4 = st.columns(4)
 
-if score >= 70:
-    c1.metric("综合崩盘/见顶风险评分", f"{score} / 100", "高危警戒", delta_color="inverse")
-elif score >= 45:
-    c1.metric("综合崩盘/见顶风险评分", f"{score} / 100", "中度分歧", delta_color="off")
+# 1. 综合风险评分
+if total_score >= 70:
+    c1.metric("综合系统性风险总分", f"{total_score} / 100", "高危共振警戒", delta_color="inverse")
+elif total_score >= 45:
+    c1.metric("综合系统性风险总分", f"{total_score} / 100", "中度分歧累积", delta_color="off")
 else:
-    c1.metric("综合崩盘/见顶风险评分", f"{score} / 100", "健康/低危", delta_color="normal")
+    c1.metric("综合系统性风险总分", f"{total_score} / 100", "整体健康安全", delta_color="normal")
 
-c2.metric("QQQ 近25日机构派发天数", f"{details['distribution_days']['count']} 天", 
-          "≥5天提示顶部" if details['distribution_days']['count'] >= 5 else "正常")
+# 2. 高频短期战术评分
+if short_score >= 70:
+    c2.metric("⚡ 高频短期战术风险", f"{short_score} / 100", "科技链筹码松动", delta_color="inverse")
+elif short_score >= 45:
+    c2.metric("⚡ 高频短期战术风险", f"{short_score} / 100", "结构性分化", delta_color="off")
+else:
+    c2.metric("⚡ 高频短期战术风险", f"{short_score} / 100", "微观流动性充沛", delta_color="normal")
 
-flagged_stocks = details['volume_divergence']['flagged']
-c3.metric("高位无量冲顶龙头数", f"{len(flagged_stocks)} 只", 
-          ", ".join(flagged_stocks) if flagged_stocks else "无显著背离")
+# 3. 中长期战略宏观评分
+if macro_score >= 70:
+    c3.metric("🌐 中长频宏观战略风险", f"{macro_score} / 100", "衰退/利差高压", delta_color="inverse")
+elif macro_score >= 45:
+    c3.metric("🌐 中长频宏观战略风险", f"{macro_score} / 100", "宏观温和承压", delta_color="off")
+else:
+    c3.metric("🌐 中长频宏观战略风险", f"{macro_score} / 100", "大周期扩张平稳", delta_color="normal")
 
-c4.metric("QQQ 近月期权 Put/Call Ratio", f"{details['options_pcr']['pcr_value']}", 
-          "看跌对冲激增" if details['options_pcr']['pcr_value'] > 1.1 else "偏中性")
+# 4. 共振警报状态
+if resonance["active"]:
+    c4.metric("多因子共振状态", "🔥 触发极端共振", f"{resonance['extreme_count']}个因子极度高危 (+{int(resonance['boost'])}分)", delta_color="inverse")
+else:
+    c4.metric("多因子共振状态", "未触发共振", f"高危因子: {resonance['extreme_count']} 个", delta_color="normal")
 
 st.markdown("---")
 
-col_left, col_right = st.columns([1, 1])
+# =============================================================================
+# 双频双栏分立展示专栏 (高频短期 VS 中长期中频)
+# =============================================================================
+col_short, col_macro = st.columns([1, 1], gap="large")
 
-with col_left:
-    st.subheader("四维风险因子分解")
-    categories = ["机构派发日", "龙头量能背离", "科技相对强弱(RS)", "期权PCR倾斜"]
-    factor_scores = [
-        details['distribution_days']['score'],
-        details['volume_divergence']['score'],
-        details['rs_divergence']['score'],
-        details['options_pcr']['score']
+# -----------------------------------------------------------------------------
+# 左栏：⚡ 战术级高频短期信号专栏
+# -----------------------------------------------------------------------------
+with col_short:
+    st.subheader("⚡ 高频战术级短线信号 (Tactical Signals)")
+    st.caption("核心观察：纳指与AI领涨股流动性拐点、筹码派发节奏与衍生品防守买盘")
+    
+    # 短频指标矩阵
+    s1, s2 = st.columns(2)
+    s1.metric(
+        "QQQ 近25日机构派发天数", 
+        f"{s_details['distribution_days']['count']} 天", 
+        "≥5天高度警惕机构抛售" if s_details['distribution_days']['count'] >= 5 else "机构抛压平稳"
+    )
+    s2.metric(
+        "QQQ 近月期权 Put/Call Ratio", 
+        f"{s_details['options_pcr']['pcr_value']}", 
+        "对冲买盘激增" if s_details['options_pcr']['pcr_value'] > 1.1 else "偏中性情绪"
+    )
+    
+    s3, s4 = st.columns(2)
+    flagged = s_details['volume_divergence']['flagged']
+    s3.metric(
+        "高位无量冲顶龙头数", 
+        f"{len(flagged)} 只", 
+        ", ".join(flagged) if flagged else "无显著量价顶背离"
+    )
+    rs_slope = s_details['rs_divergence']['rs_slope_pct']
+    s4.metric(
+        "半导体 (SMH / SPY) 20日动能斜率", 
+        f"{rs_slope}%", 
+        "科技相对走弱" if rs_slope < 0 else "科技领涨大盘"
+    )
+
+    st.markdown("##### 核心领涨板块相对强弱 (SMH / SPY)")
+    if "SMH" in data_dict and "SPY" in data_dict:
+        rs_series = data_dict["SMH"]["Close"] / data_dict["SPY"]["Close"]
+        fig_rs = go.Figure()
+        fig_rs.add_trace(go.Scatter(
+            x=rs_series.index, 
+            y=rs_series.values, 
+            mode='lines', 
+            name='SMH / SPY 动能比',
+            line=dict(color='#0052FF', width=2)
+        ))
+        fig_rs.update_layout(
+            margin=dict(l=20, r=20, t=20, b=20),
+            height=280,
+            xaxis_title="交易日期",
+            yaxis_title="相对强弱比 (上行代表芯片强于标普)"
+        )
+        st.plotly_chart(fig_rs, use_container_width=True)
+
+# -----------------------------------------------------------------------------
+# 右栏：🌐 战略级中长频宏观信号专栏
+# -----------------------------------------------------------------------------
+with col_macro:
+    st.subheader("🌐 中长期战略级宏观信号 (Macro Signals)")
+    st.caption("核心观察：美债收益率曲线形态、大周期牛熊均线超买偏离与宏观情绪钟摆")
+
+    m1, m2, m3 = st.columns(3)
+    # 美债利差
+    spread_info = m_details['yield_spread']
+    m1.metric(
+        "美债 10Y-2Y 曲线利差",
+        f"{spread_info['spread']}%",
+        f"{spread_info['status']}"
+    )
+    # 200日均线乖离
+    sma_info = m_details['sma200_deviation']
+    m2.metric(
+        "标普500 (SPY) 200日均线乖离",
+        f"{sma_info['dev_pct']}%",
+        f"{sma_info['status']}"
+    )
+    # 恐慌贪婪
+    fg_info = m_details['fear_greed']
+    m3.metric(
+        "CNN 恐慌与贪婪指数",
+        f"{int(fg_info['value'])}",
+        f"{fg_info['status']}"
+    )
+
+    st.markdown("##### 全维风险因子雷达图 (Radar Profile)")
+    categories = [
+        "机构派发日", 
+        "龙头量价背离", 
+        "科技相对强弱", 
+        "期权PCR对冲", 
+        "美债曲线利差", 
+        "标普200日乖离", 
+        "宏观情绪贪婪"
+    ]
+    scores = [
+        s_details['distribution_days']['score'],
+        s_details['volume_divergence']['score'],
+        s_details['rs_divergence']['score'],
+        s_details['options_pcr']['score'],
+        m_details['yield_spread']['score'],
+        m_details['sma200_deviation']['score'],
+        m_details['fear_greed']['score']
     ]
 
     fig_radar = go.Figure()
     fig_radar.add_trace(go.Scatterpolar(
-        r=factor_scores + [factor_scores[0]],
+        r=scores + [scores[0]],
         theta=categories + [categories[0]],
         fill='toself',
-        name='当前风险暴露'
+        fillcolor='rgba(235, 87, 87, 0.25)',
+        line=dict(color='#EB5757', width=2),
+        name='当前全维风险暴露'
     ))
     fig_radar.update_layout(
-        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 100], tickfont=dict(size=10)),
+            angularaxis=dict(tickfont=dict(size=11))
+        ),
         showlegend=False,
-        margin=dict(l=40, r=40, t=30, b=30)
+        height=280,
+        margin=dict(l=40, r=40, t=20, b=20)
     )
     st.plotly_chart(fig_radar, use_container_width=True)
 
-with col_right:
-    st.subheader("核心领涨板块相对强弱 (SMH / SPY)")
-    if "SMH" in data_dict and "SPY" in data_dict:
-        rs_series = data_dict["SMH"]["Close"] / data_dict["SPY"]["Close"]
-        fig_rs = go.Figure()
-        fig_rs.add_trace(go.Scatter(x=rs_series.index, y=rs_series.values, mode='lines', name='SMH / SPY 相对强弱比'))
-        fig_rs.update_layout(
-            margin=dict(l=20, r=20, t=30, b=20),
-            xaxis_title="日期",
-            yaxis_title="比值 (上行代表半导体强于大盘)"
-        )
-        st.plotly_chart(fig_rs, use_container_width=True)
+st.markdown("---")
 
-st.subheader("A股与IM期指联动预案提示")
-st.markdown(f"""
-- **当前核心诊断：** 综合得分为 **{score}** 分。
-- **操作指引：**
-  - **评分 < 45：** 科技链流动性健康，美股下挫多为良性休整，A股若低开易出现日内修复；
-  - **45 <= 评分 < 70：** 出现结构性背离，不可盲目追高，关注期指均线乖离，适度收缩成长敞口；
-  - **评分 >= 70：** 顶部高危共振。美股杀跌将向下游传导，A股（尤其是中证1000/IM）早盘情绪低开后，等待日线/60分钟回抽5日线阻力受阻，择机右侧开空或配置看跌期权保护。
-""")
+# =============================================================================
+# 底部：🎯 针对 A 股与中证1000 (IM) 期指的双频联动对冲矩阵
+# =============================================================================
+st.subheader("🎯 A股与中证1000/IM期指双频对冲联动矩阵")
+
+col_guide_left, col_guide_right = st.columns([1, 2])
+
+with col_guide_left:
+    st.markdown(f"#### 状态研判：{guide['level']}")
+    st.markdown(f"**综合风险评分：** `{total_score} / 100`")
+    st.markdown(f"- ⚡ 高频短线分: **{short_score}** 分")
+    st.markdown(f"- 🌐 中长宏观分: **{macro_score}** 分")
+    if resonance["active"]:
+        st.error(f"⚠️ 触发黑天鹅共振加分 (+{int(resonance['boost'])}分)，极端因子数达到 {resonance['extreme_count']} 个！")
+
+with col_guide_right:
+    st.markdown(f"**核心诊断逻辑：**\n{guide['diagnosis']}")
+    st.info(f"**中证1000 (IM) 与A股实操策略：**\n{guide['im_strategy']}")
