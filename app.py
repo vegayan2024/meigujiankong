@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from data_loader import (
+    fetch_all_inputs,
     fetch_historical_data, 
     fetch_put_call_ratio, 
     fetch_treasury_yields, 
