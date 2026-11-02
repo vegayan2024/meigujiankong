@@ -25,11 +25,26 @@ from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger("MobilePushNotifier")
 CONFIG_FILE = Path(__file__).resolve().parent / "push_config.json"
-
 DEBOUNCE_FILE = Path(__file__).resolve().parent / ".push_debounce_cache.json"
+ENV_FILE = Path(__file__).resolve().parent / ".env"
+
+def _load_env():
+    """加载本地 .env 文件至环境变量"""
+    if ENV_FILE.exists():
+        try:
+            for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+        except Exception:
+            pass
+
+_load_env()
 
 class MobilePushNotifier:
     def __init__(self, config_path: Optional[Path] = None):
+        _load_env()
         self.config_path = config_path or CONFIG_FILE
         self.config = self._load_config()
         self.debounce_seconds = self.config.get("debounce_seconds", 7200)  # 默认2小时(7200秒)防抖
@@ -52,7 +67,7 @@ class MobilePushNotifier:
             logger.warning(f"保存防抖缓存 {DEBOUNCE_FILE} 失败: {e}")
 
     def _load_config(self) -> Dict[str, Any]:
-        """加载推送配置，支持从环境变量与本地 json 读取"""
+        """加载推送配置，优先读取 .env 与环境变量，合并本地 push_config.json"""
         default_config = {
             "enabled": True,
             "debounce_seconds": 7200,
@@ -76,9 +91,18 @@ class MobilePushNotifier:
         if self.config_path.exists():
             try:
                 user_cfg = json.loads(self.config_path.read_text(encoding="utf-8"))
-                default_config.update(user_cfg)
-                if "channels" in user_cfg:
-                    default_config["channels"].update(user_cfg["channels"])
+                if "enabled" in user_cfg:
+                    default_config["enabled"] = bool(user_cfg["enabled"])
+                if "debounce_seconds" in user_cfg:
+                    default_config["debounce_seconds"] = int(user_cfg["debounce_seconds"])
+                if "channels" in user_cfg and isinstance(user_cfg["channels"], dict):
+                    for k, v in user_cfg["channels"].items():
+                        env_val = default_config["channels"].get(k, "")
+                        # 优先保留有效的非空配置；若两者皆有，选用较长更完整的值（防无效占位符）
+                        if v and (not env_val or len(str(v)) >= len(str(env_val))):
+                            default_config["channels"][k] = v
+                        elif env_val:
+                            default_config["channels"][k] = env_val
             except Exception as e:
                 logger.warning(f"读取推送配置 {self.config_path} 异常: {e}")
         else:
@@ -295,15 +319,24 @@ class MobilePushNotifier:
     def _send_pushplus(self, token: str, title: str, content: str):
         """PushPlus (推送加 - 微信直推)"""
         try:
-            url = "http://www.pushplus.plus/send"
+            url = "https://www.pushplus.plus/send"
             payload = {
                 "token": token,
                 "title": title,
                 "content": content,
                 "template": "markdown"
             }
-            resp = requests.post(url, json=payload, timeout=6)
-            return resp.status_code == 200
+            headers = {"Content-Type": "application/json"}
+            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("code") == 200:
+                    logger.info(f"PushPlus 微信推送成功: {data.get('data')}")
+                    return True
+                else:
+                    logger.warning(f"PushPlus 微信推送被拒: code={data.get('code')}, msg={data.get('msg')}")
+                    return False
+            return False
         except Exception as e:
             logger.warning(f"PushPlus 发送失败: {e}")
             return False

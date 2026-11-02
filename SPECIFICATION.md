@@ -192,6 +192,20 @@ flowchart TD
 
 ## 6. 移动端推送与持久化防抖 (`push_notifier.py`)
 
+### 6.1 通道协议与网络规范
+1. **微信 PushPlus 直推 (重点复查项)**：
+   - **通信协议**：采用强制 HTTPS 直连（`https://www.pushplus.plus/send`），注入 `Content-Type: application/json`，杜绝 HTTP 80 端口强制重定向导致的连接被服务端重置断开（`RemoteDisconnected`）；
+   - **应答校验**：双重校验 HTTP 状态码（200）与业务返回体 JSON 中的 `code == 200`，对 `code=903`（令牌无效）等业务异常进行日志预警与状态反馈；
+   - **模板格式**：统一格式化为 `markdown` 模板，支持消息卡片富文本渲染。
+2. **多源凭证加载优先级 (防泄露与高可用架构)**：
+   - 模块初始化时自动加载本地 `.env`（已被 Git 忽略）；
+   - 推送 Token（如 `PUSHPLUS_TOKEN`）优先从 `.env` / 环境变量读取；若与 `push_config.json` 冲突，自动剔除短位占位符，优先选用 32 位有效真实 Token，确保代码提交至开源或远程仓库时零泄密。
+3. **其他通道支持**：
+   - **iOS Bark**：向 `https://api.day.app/{key}/` 发送 POST 请求，带分组 `美股流动性监控` 与警报音频；
+   - **企业微信 / 钉钉 / 飞书**：支持 Webhook 机器人卡片渲染；
+   - **Telegram**：通过 Bot API 发送 Markdown 消息。
+
+### 6.2 智能持久化防抖 (Debounce) 与恶化穿透
 1. **本地 JSON 文件持久化防抖**：
    防抖记录保存于项目根目录 `.push_debounce_cache.json`（已被 Git 忽略），跨进程永久生效。
 2. **2 小时默认防抖窗口**：
