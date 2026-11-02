@@ -312,9 +312,24 @@ def _equity_tushare(ticker):
 
 def _equity_yf(ticker):
     import yfinance as yf
-    df = yf.download(ticker, period="2y", interval="1d", progress=False, auto_adjust=False)
+    df = None
+    try:
+        tk = yf.Ticker(ticker)
+        df = tk.history(period="2y", auto_adjust=False)
+        if df is None or df.empty:
+            df = tk.history(period="1y")
+    except Exception:
+        df = None
+
+    if df is None or df.empty:
+        try:
+            df = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=False)
+        except Exception:
+            pass
+
     if df is None or df.empty:
         raise ValueError(f"yfinance {ticker} 返回空")
+
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [c[0] for c in df.columns]
     df.index = pd.to_datetime(df.index).tz_localize(None)

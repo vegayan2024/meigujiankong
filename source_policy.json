@@ -1,0 +1,30 @@
+{
+  "equity_daily": {
+    "chain": [
+      "tushare_us_daily",
+      "yfinance"
+    ],
+    "authorized_fallback": true
+  },
+  "treasury": {
+    "chain": [
+      "tushare_us_tycr",
+      "ifind_edb",
+      "eastmoney",
+      "fred_csv"
+    ],
+    "authorized_fallback": true
+  },
+  "options_pcr": {
+    "chain": [
+      "yfinance_options"
+    ],
+    "authorized_fallback": true
+  },
+  "fear_greed": {
+    "chain": [
+      "cnn_dataviz"
+    ],
+    "authorized_fallback": true
+  }
+}

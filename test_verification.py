@@ -59,7 +59,8 @@ def run_tests():
     notifier = MobilePushNotifier()
     assert notifier.debounce_seconds == 7200, f"Expected 7200, got {notifier.debounce_seconds}"
     # 测试突破防抖逻辑
-    dedup_key = "TEST:ALERT"
+    import time
+    dedup_key = f"TEST:ALERT_{int(time.time() * 1000)}"
     # 第一次发送
     is_dup1 = notifier._is_duplicate(dedup_key, level="🟡 [双频温和承压]", score=60.0, is_resonance=False, force=False)
     assert is_dup1 is False, "First send should not be duplicate"
