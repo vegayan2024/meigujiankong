@@ -35,6 +35,8 @@ class ScoreResult(float):
 def score_yield_curve(spread: float, is_fallback: bool = False, spread_history=None):
     """
     美债 10Y-2Y 利差打分独立函数 (支持路径感知与兜底防误报)
+    - 历史深度倒挂定义为过去 180 个交易日 (约 9 个月) 曾出现 Spread <= -0.20%
+    - 超过 180 天或无深度倒挂时，[0%, 0.35%) 解挂带评为 55.0 分 (温和解挂/软着陆观察)
     """
     if is_fallback or abs(spread - 0.55) < 1e-4:
         # 断网或兜底基准值 0.55%：锁定为安全分 30.0，严禁触发 >= 75 分共振
@@ -43,7 +45,9 @@ def score_yield_curve(spread: float, is_fallback: bool = False, spread_history=N
     had_deep_inversion = False
     if spread_history:
         try:
-            had_deep_inversion = any(float(s) < -0.35 for s in spread_history)
+            # 严格回溯过去 180 个交易日 (约 9 个自然月)
+            recent_spread = spread_history[-180:] if len(spread_history) >= 180 else spread_history
+            had_deep_inversion = any(float(s) <= -0.20 for s in recent_spread)
         except Exception:
             had_deep_inversion = False
 
@@ -59,7 +63,7 @@ def score_yield_curve(spread: float, is_fallback: bool = False, spread_history=N
             status = "倒挂后急剧走陡解挂 (高危牛陡衰退落地期)"
         else:
             score = 55.0
-            status = "解挂观察期 (温和紧缩/软着陆观察)"
+            status = "解挂观察期 (温和解挂/软着陆低位观察)"
     elif 0.35 <= spread < 1.0:
         score = 30.0
         status = "正常陡峭化 (经济平稳)"
@@ -412,56 +416,76 @@ class CrashRiskEngine:
         """
         完备互斥的阶梯状态机决策矩阵（覆盖全状态空间，无逻辑死区）
         """
-        im_risk_warning = (
-            "\n\n> **【基差风控提示】** 开空 IM 期指前务必核查当前年化贴水率；"
-            "若早盘大幅低开导致 IM 年化贴水率 > 15%，严禁盲目追空期指以防基差收敛逼空，"
-            "应优先改用买入中证1000看跌期权（MO）构建熊市价差进行保护。"
+        return get_action_guide(
+            total_score=total_score,
+            short_score=s_short,
+            macro_score=s_macro,
+            is_resonance=resonance,
+            extreme_factors=extreme_list
         )
 
-        # 1. 🚨 高危共振警戒：Score_total >= 70 或 触发多因子共振
-        if total_score >= 70 or resonance:
-            return {
-                "level": "🚨 [高危共振警戒] (Systemic Crash Threat)",
-                "color": "red",
-                "diagnosis": f"短频与中频宏观触发多因子极端共振（极端因子: {', '.join(extreme_list)}）。美股见顶下杀具有强破坏力与传染性。",
-                "im_strategy": "A股（尤其是成长代表中证1000/IM）极易遭受海外流动性收缩踩踏。早盘切忌盲目抄底，若盘中出现弱反抽5日均线受阻，坚决在右侧开空 IM 或配置看跌期权保护现货敞口。" + im_risk_warning
-            }
 
-        # 2. ⚠️ 短线战术分歧：Score_total < 70 且未共振，短频高(>=65)而宏观稳(<55)
-        elif total_score < 70 and not resonance and s_short >= 65 and s_macro < 55:
-            return {
-                "level": "⚠️ [短线战术分歧] (Tactical Tech Pullback)",
-                "color": "orange",
-                "diagnosis": "短频科技链量价背离或派发天数增加，但宏观中频（美债利差与宏观情绪）整体稳健，定性为科技成长股的高位局部休整。",
-                "im_strategy": "对A股及IM期指更多体现为早盘情绪性低开扰动。低开释放浮筹后，往往易走出日内 V 型反弹或探底回升，不宜追空杀跌，可在支撑位寻找结构性博弈机会。"
-            }
+def get_action_guide(total_score: float, short_score: float, macro_score: float, is_resonance: bool = False, extreme_factors=None):
+    """
+    完备互斥五阶梯状态机决策路由器 (导出独立函数)
+    优先级顺序：
+      第 1 优先级: 🚨 高危共振警戒 (Score_total >= 70 或 is_resonance)
+      第 2 优先级: ⚠️ 短线战术分歧 (Score_short >= 65 且 Score_macro < 55)
+      第 3 优先级: ⏳ 宏观阴霾蓄力 (Score_macro >= 65 且 Score_short < 55)
+      第 4 优先级: 🟢 双频低危健康 (Score_total < 50，已排他排除 short/macro 单边 >= 65)
+      第 5 优先级: 🟡 双频温和承压 (else: 50 <= Score_total < 70 且无单边极端分歧)
+    """
+    extreme_list = extreme_factors or []
+    im_risk_warning = (
+        "\n\n> **【基差风控提示】** 开空 IM 期指前务必核查当前年化贴水率；"
+        "若早盘大幅低开导致 IM 年化贴水率 > 15%，严禁盲目追空期指以防基差收敛逼空，"
+        "应优先改用买入中证1000看跌期权（MO）构建熊市价差进行保护。"
+    )
 
-        # 3. ⏳ 宏观阴霾蓄力：Score_total < 70 且未共振，宏观高(>=65)而短频尚未破位(<55)
-        elif total_score < 70 and not resonance and s_macro >= 65 and s_short < 55:
-            return {
-                "level": "⏳ [宏观阴霾蓄力] (Macro Headwind Building)",
-                "color": "yellow",
-                "diagnosis": "中长频宏观因子（美债利差/估值乖离）处于敏感高危带，但短频龙头尚未明显放量砸盘。属于'雷声大雨点小'的钝化期。",
-                "im_strategy": "中长线资金不可盲目加高估值杠杆，IM 多头宜逢高逐步收缩风险暴露，提高组合防御性（红利/低估值），耐心等待短频右侧信号明朗。"
-            }
+    # 1. 🚨 高危共振警戒：Score_total >= 70 或 触发多因子共振
+    if total_score >= 70 or is_resonance:
+        return {
+            "level": "🚨 [高危共振警戒] (Systemic Crash Threat)",
+            "color": "red",
+            "diagnosis": f"短频与中频宏观触发多因子极端共振（极端因子: {', '.join(extreme_list)}）。美股见顶下杀具有强破坏力与传染性。",
+            "im_strategy": "A股（尤其是成长代表中证1000/IM）极易遭受海外流动性收缩踩踏。早盘切忌盲目抄底，若盘中出现弱反抽5日均线受阻，坚决在右侧开空 IM 或配置看跌期权保护现货敞口。" + im_risk_warning
+        }
 
-        # 4. 🟡 双频温和承压（新增闭环兜底象限）：50 <= Score_total < 70 且不满足上述单边分歧条件
-        elif 50.0 <= total_score < 70.0:
-            return {
-                "level": "🟡 [双频温和承压] (Moderate Pressure / Chop)",
-                "color": "yellow",
-                "diagnosis": "短频筹码与中频宏观均处于中等偏紧状态，市场缺乏单边突破动能，波动率中枢抬升。",
-                "im_strategy": "【控制仓位/网格波段】A股与中证1000易陷入宽幅震荡，IM 期指不宜追涨杀跌；建议将多头敞口降至半仓以下，或采用买平值看跌期权（MO）构建领口策略（Collar）锁住尾部风险。"
-            }
+    # 2. ⚠️ 短线战术分歧：短频高(>=65)而宏观稳(<55)
+    elif short_score >= 65 and macro_score < 55:
+        return {
+            "level": "⚠️ [短线战术分歧] (Tactical Tech Pullback)",
+            "color": "orange",
+            "diagnosis": "短频科技链量价背离或派发天数增加，但宏观中频（美债利差与宏观情绪）整体稳健，定性为科技成长股的高位局部休整。",
+            "im_strategy": "对A股及IM期指更多体现为早盘情绪性低开扰动。低开释放浮筹后，往往易走出日内 V 型反弹或探底回升，不宜追空杀跌，可在支撑位寻找结构性博弈机会。"
+        }
 
-        # 5. 🟢 双频低危健康：Score_total < 50
-        else:
-            return {
-                "level": "🟢 [双频低危健康] (Healthy Expansion)",
-                "color": "green",
-                "diagnosis": "高频流动性充沛，中频宏观无显著系统性衰退风险。美股若偶发下跌多属正常洗盘。",
-                "im_strategy": "外部环境对A股冲击轻微，可忽略美股短线噪音，聚焦国内核心主线与自身产业逻辑，IM期指多头底仓可继续安心持有。"
-            }
+    # 3. ⏳ 宏观阴霾蓄力：宏观高(>=65)而短频尚未破位(<55)
+    elif macro_score >= 65 and short_score < 55:
+        return {
+            "level": "⏳ [宏观阴霾蓄力] (Macro Headwind Building)",
+            "color": "yellow",
+            "diagnosis": "中长频宏观因子（美债利差/估值乖离）处于敏感高危带，但短频龙头尚未明显放量砸盘。属于'雷声大雨点小'的钝化期。",
+            "im_strategy": "中长线资金不可盲目加高估值杠杆，IM 多头宜逢高逐步收缩风险暴露，提高组合防御性（红利/低估值），耐心等待短频右侧信号明朗。"
+        }
+
+    # 4. 🟢 双频低危健康：Score_total < 50 且无单边极端高危
+    elif total_score < 50:
+        return {
+            "level": "🟢 [双频低危健康] (Healthy Expansion)",
+            "color": "green",
+            "diagnosis": "高频流动性充沛，中频宏观无显著系统性衰退风险。美股若偶发下跌多属正常洗盘。",
+            "im_strategy": "外部环境对A股冲击轻微，可忽略美股短线噪音，聚焦国内核心主线与自身产业逻辑，IM期指多头底仓可继续安心持有。"
+        }
+
+    # 5. 🟡 双频温和承压（闭环兜底象限）：50 <= Score_total < 70 且无单边极端分歧
+    else:
+        return {
+            "level": "🟡 [双频温和承压] (Moderate Pressure / Chop)",
+            "color": "yellow",
+            "diagnosis": "短频筹码与中频宏观均处于中等偏紧状态，市场缺乏单边突破动能，波动率中枢抬升。",
+            "im_strategy": "【控制仓位/网格波段】A股与中证1000易陷入宽幅震荡，IM 期指不宜追涨杀跌；建议将多头敞口降至半仓以下，或采用买平值看跌期权（MO）构建领口策略（Collar）锁住尾部风险。"
+        }
 
 
 def evaluate_all(data_dict=None, pcr_val=1.0, treasury_data=None, fear_greed_data=None):

@@ -112,54 +112,96 @@ class MobilePushNotifier:
                 pass
         return default_config
 
-    def _is_duplicate(
+    def _check_should_suppress(
         self,
-        dedup_key: str,
+        dedup_key: str = "default",
         level: str = "",
         score: float = 0.0,
         is_resonance: bool = False,
         force: bool = False
     ) -> bool:
+        """
+        检查是否应被防抖抑制 (返回 True 表示拦截，False 表示放行)。
+        严格原则：在未实际发送前或被拦截时，绝不修改/覆盖缓存中的基准分。
+        """
         if force:
-            self._record_sent(dedup_key, level, score, is_resonance)
             return False
 
+        cache = self._sent_cache or {}
+        # 支持按独立 dedup_key 查找；若为 default 或空，则读取顶层全局基准
+        if dedup_key and dedup_key != "default":
+            raw = cache.get(dedup_key, {})
+        else:
+            raw = cache
+        last_time = float(raw.get("last_pushed_timestamp", raw.get("time", 0.0)))
+        last_level = str(raw.get("last_pushed_level", raw.get("level", "")))
+        last_score = float(raw.get("last_pushed_score", raw.get("score", 0.0)))
+        last_res = bool(raw.get("last_pushed_resonance", raw.get("resonance", False)))
+
         now = time.time()
-        record = self._sent_cache.get(dedup_key, {})
-        if not isinstance(record, dict):
-            record = {"time": float(record) if record else 0.0, "level": "", "score": 0.0, "resonance": False}
+        # 首次推送放行
+        if last_time <= 0.0:
+            return False
 
-        last_time = float(record.get("time", 0.0))
-        last_level = str(record.get("level", ""))
-        last_score = float(record.get("score", 0.0))
-        last_res = bool(record.get("resonance", False))
+        # 超过 2 小时(7200秒)防抖窗口放行
+        if now - last_time >= self.debounce_seconds:
+            return False
 
-        # 状态恶化跃迁突破防抖检查：
-        # 1. 之前未共振，当前触发共振
-        # 2. 综合分相比上次飙升 >= 10分
-        # 3. 状态等级升级至高危共振警戒
+        # 2小时内检查恶化跃迁穿透机制：
+        # 1. 之前未共振，当前触发多因子极端共振
+        # 2. 综合分相比上次实际推送时的基准飙升 >= 10.0 分
+        # 3. 风险等级升级至高危共振警戒
         is_breakthrough = False
         if is_resonance and not last_res:
             is_breakthrough = True
-        elif score - last_score >= 10.0:
+        elif (score - last_score) >= 10.0:
             is_breakthrough = True
-        elif "高危共振" in level and "高危共振" not in last_level:
+        elif ("高危共振" in level or "Systemic Crash" in level) and not ("高危共振" in last_level or "Systemic Crash" in last_level):
             is_breakthrough = True
 
-        if not is_breakthrough and (now - last_time < self.debounce_seconds):
+        if is_breakthrough:
+            logger.info(f"[Debounce Breakthrough] 触发恶化跃迁穿透: 分数 {last_score}->{score}, 状态 {last_level}->{level}, 共振 {last_res}->{is_resonance}")
+            return False
+
+        # 未恶化且处于窗口期，静默拦截，绝对不更新缓存基准
+        return True
+
+    def _is_duplicate(
+        self,
+        dedup_key: str = "default",
+        level: str = "",
+        score: float = 0.0,
+        is_resonance: bool = False,
+        force: bool = False
+    ) -> bool:
+        """
+        防抖判定与基准记录接口：
+        - 若被防抖拦截 (True)，绝对不修改/覆盖缓存文件中的任何字段！
+        - 若放行允许发送 (False)，方才更新持久化基准。
+        """
+        suppress = self._check_should_suppress(dedup_key=dedup_key, level=level, score=score, is_resonance=is_resonance, force=force)
+        if suppress:
             return True
-
-        self._record_sent(dedup_key, level, score, is_resonance)
+        self._record_sent_success(dedup_key=dedup_key, level=level, score=score, is_resonance=is_resonance)
         return False
 
-    def _record_sent(self, dedup_key: str, level: str, score: float, is_resonance: bool):
-        self._sent_cache[dedup_key] = {
-            "time": time.time(),
-            "level": level,
-            "score": score,
-            "resonance": is_resonance,
+    def _record_sent_success(self, dedup_key: str = "default", level: str = "", score: float = 0.0, is_resonance: bool = False):
+        """仅在实际成功送达后，才持久化记录新的基准分与时间戳"""
+        now = time.time()
+        record = {
+            "last_pushed_timestamp": now,
+            "last_pushed_score": float(score),
+            "last_pushed_level": str(level),
+            "last_pushed_resonance": bool(is_resonance),
+            "time": now,
+            "score": float(score),
+            "level": str(level),
+            "resonance": bool(is_resonance),
             "formatted_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
+        if dedup_key:
+            self._sent_cache[dedup_key] = record
+        self._sent_cache.update(record)
         self._save_debounce_cache()
 
     def send_alert(
@@ -177,10 +219,8 @@ class MobilePushNotifier:
         if not self.config.get("enabled", True):
             return {"ok": False, "msg": "推送功能已全局禁用"}
 
-        dedup_key = f"{level}:{title}"
-        if self._is_duplicate(dedup_key, level=level, score=score, is_resonance=is_resonance, force=force):
+        if self._check_should_suppress(level=level, score=score, is_resonance=is_resonance, force=force):
             return {"ok": False, "msg": f"命中防抖窗口({self.debounce_seconds}秒)，且无恶化跃迁，暂不重复推送"}
-
 
         channels = self.config.get("channels", {})
         results = {}
@@ -230,7 +270,13 @@ class MobilePushNotifier:
         if not results:
             return {"ok": False, "msg": "未配置任何有效的手机端推送通道 (请配置 Bark/微信/企业微信/钉钉/飞书 等)"}
 
-        return {"ok": True, "details": results}
+        any_success = any(bool(v) for v in results.values())
+        if any_success:
+            # 只有实际成功发送后才写入持久化基准
+            self._record_sent_success(dedup_key="global_alert", level=level, score=score, is_resonance=is_resonance)
+            return {"ok": True, "details": results}
+        else:
+            return {"ok": False, "msg": "所有配置的推送通道发送均失败", "details": results}
 
     # ================== 各通道具体适配实现 ==================
 

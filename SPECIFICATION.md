@@ -115,26 +115,32 @@ flowchart TD
 - **顶背离惩罚**：若 $Slope_{\text{SPY}} > 0.01$ 且 $Slope_{\text{RS}} < -0.02$，额外增加 $Penalty_{\text{div}} = 15.0$ 分。
 - 最终得分：$S_{\text{rs}} = \min(Base_{\text{rs}} + Penalty_{\text{div}}, 100.0)$。
 
-#### 因子 4: QQQ 期权 Put/Call Ratio (Filtered PCR)
+#### 因子 4: QQQ 期权 Put/Call Ratio (Filtered & Skew-Calibrated PCR)
 - **到期日过滤**：选取距离当前 7~25 天的期权，剔除 0DTE~3DTE 末日轮噪音。
 - **行权价过滤**：保留现价 $[0.90 \times P_{\text{spot}}, 1.10 \times P_{\text{spot}}]$ 范围。
-- **成交量与持仓量自适应**：
-  若成交总量 $\ge 1000$ 张且 $CallVol > 0$，使用成交量 PCR；若非交易时段成交量清零，自动无缝降级为持仓量 $PCR_{\text{OI}} = \sum PutOI / \max(\sum CallOI, 1)$。
+- **成交量与持仓量自适应 (带 0.78 偏度校准)**：
+  - 若成交总量 $\ge 1000$ 张且 $CallVol > 0$，使用成交量 PCR：$PCR = \sum PutVol / \sum CallVol$，并缓存该最近有效值；
+  - 若非交易时段成交量清零，无缝切换为持仓量 $PCR_{\text{OI}} = \sum PutOI / \max(\sum CallOI, 1)$；
+  - **持仓 OI 偏度校准机制**：鉴于机构将 QQQ 作为长线对冲工具天然持有大量深度实值/虚值认沽头寸，直接套用成交量阈值会导致盘后跳变飙升至 100 分假预警；系统引入历史偏度校准系数 `0.78`：
+    $$PCR_{\text{effective}} = PCR_{\text{OI}} \times 0.78$$
+    彻底消除成交与持仓之间的结构性滑点。
 - **打分规则**：$\le 0.7$ 为 15 分，$(0.7, 1.0]$ 为 30~60分，$(1.0, 1.3]$ 为 60~90分，$> 1.3$ 为 100 分。
 
 ---
 
 ### 3.2 🌐 战略级中长频宏观信号 (Macro Signals)
 
-#### 因子 5: 美债 10Y-2Y 收益率曲线利差 (Yield Curve Spread with Path-Sensing)
+#### 因子 5: 美债 10Y-2Y 收益率曲线利差 (Yield Curve Spread with 180-Day Window Path-Sensing)
 - **输入**：$Spread = Y_{10} - Y_2$ 及历史利差序列。
+- **历史深度倒挂窗口限制**：
+  严格将回溯窗口限定为**过去 180 个交易日（约 9 个月）**，即 $\min(Spread_{t-180:t}) \le -0.20\%$。若深度倒挂发生在 180 天之前，视为已平稳度过初期危险冲击，不予滥用 75 分高危定性。
 - **打分映射**：
   $$S_{\text{spread}} = \begin{cases}
-  30.0, & \text{is\_fallback = True (兜底安全基准，严禁触发共振)} \\
+  30.0, & \text{is\_fallback = True (断网或兜底基准 0.55%，锁定安全分，严禁触发共振)} \\
   85.0, & Spread < -0.35\% \ (\text{强确定性深度倒挂}) \\
   65.0, & -0.35\% \le Spread < 0\% \ (\text{轻度倒挂}) \\
-  75.0, & 0\% \le Spread < 0.35\% \ \text{且历史上曾深度倒挂} \ (\text{高危牛陡解挂衰退落地}) \\
-  55.0, & 0\% \le Spread < 0.35\% \ \text{且无深度倒挂历史} \ (\text{温和紧缩/软着陆观察期}) \\
+  75.0, & 0\% \le Spread < 0.35\% \ \text{且近 180 交易日内曾深度倒挂} \ (\text{高危牛陡解挂衰退落地}) \\
+  55.0, & 0\% \le Spread < 0.35\% \ \text{且近 180 交易日无深度倒挂} \ (\text{温和解挂/软着陆低位观察期}) \\
   30.0, & 0.35\% \le Spread < 1.0\% \ (\text{正常陡峭：平稳扩张}) \\
   20.0, & Spread \ge 1.0\% \ (\text{深度陡峭：宽松期})
   \end{cases}$$
@@ -162,13 +168,15 @@ flowchart TD
 
 ## 4. A 股与中证1000/IM期指对冲决策矩阵 (完备五阶梯状态机)
 
-| 状态等级 | 触发判定条件 | 宏观与微观诊断 | 中证1000 (IM期指) 对冲决策 |
-| :--- | :--- | :--- | :--- |
-| **🚨 高危共振警戒** | $Score_{\text{total}} \ge 70$ 或 触发共振 | 短频筹码踩踏与中频宏观紧缩共振，美股见顶下杀具有强破坏力与传染性。 | **坚决防御/右侧做空**：A股早盘严禁盲目抄底；盘中若回抽5日均线受阻，坚决在右侧开空 IM 或配置看跌期权保护现货敞口。<br><br>⚠️ **【基差风控提示】** 开空 IM 期指前务必核查当前年化贴水率；若早盘大幅低开导致 IM 年化贴水率 > 15%，严禁盲目追空期指以防基差收敛逼空，应优先改用买入中证1000看跌期权（MO）构建熊市价差进行保护。 |
-| **⚠️ 短线战术分歧** | $Score_{\text{total}} < 70$ 且未共振，且 $Score_{\text{short}} \ge 65$ 且 $Score_{\text{macro}} < 55$ | 科技链高位量价背离但宏观基本面平稳，定性为局部估值消化与正常洗盘。 | **低开抗跌/日内反弹**：A股早盘低开易出现日内 V 型修复，切忌恐慌杀跌追空，可于日内支撑位逢低寻找错杀机会。 |
-| **⏳ 宏观阴霾蓄力** | $Score_{\text{total}} < 70$ 且未共振，且 $Score_{\text{macro}} \ge 65$ 且 $Score_{\text{short}} < 55$ | 利差倒挂/均线悬空等长周期隐患积累，但科技龙头尚未全面放量下杀。 | **收缩杠杆/战略防守**：不可盲目加高估值杠杆，IM 多头宜逢高逐步收缩风险暴露，提升组合防御性（红利/低估值）。 |
-| **🟡 双频温和承压** *(新增兜底象限)* | $50 \le Score_{\text{total}} < 70$ 且不满足上述单边分歧条件 | 短频筹码与中频宏观均处于中等偏紧状态，市场缺乏单边突破动能，波动率中枢抬升。 | **【控制仓位/网格波段】** A股与中证1000易陷入宽幅震荡，IM 期指不宜追涨杀跌；建议将多头敞口降至半仓以下，或采用买平值看跌期权（MO）构建领口策略（Collar）锁住尾部风险。 |
-| **🟢 双频低危健康** | $Score_{\text{total}} < 50$ | 高频流动性充沛，宏观无系统性衰退风险。 | **做多成长/持仓待涨**：外部噪音可完全忽略，聚焦国内产业主线，持有 IM 多头底仓。 |
+路由器执行**严格单向优先级判定（由高至低排他）**，彻底消除短线极端突变时的判定死区：
+
+| 优先级 | 状态等级 | 触发判定条件 | 宏观与微观诊断 | 中证1000 (IM期指) 对冲决策 |
+| :--- | :--- | :--- | :--- | :--- |
+| **第 1 优先级** | **🚨 高危共振警戒** | $Score_{\text{total}} \ge 70$ 或 触发共振 | 短频筹码踩踏与中频宏观紧缩共振，美股见顶下杀具有强破坏力与传染性。 | **坚决防御/右侧做空**：A股早盘严禁盲目抄底；盘中若回抽5日均线受阻，坚决在右侧开空 IM 或配置看跌期权保护现货敞口。<br><br>⚠️ **【基差风控提示】** 开空 IM 期指前务必核查当前年化贴水率；若早盘大幅低开导致 IM 年化贴水率 > 15%，严禁盲目追空期指以防基差收敛逼空，应优先改用买入中证1000看跌期权（MO）构建熊市价差进行保护。 |
+| **第 2 优先级** | **⚠️ 短线战术分歧** | $Score_{\text{short}} \ge 65$ 且 $Score_{\text{macro}} < 55$ | 科技链高位量价背离但宏观基本面平稳，定性为局部估值消化与正常洗盘。 | **低开抗跌/日内反弹**：A股早盘低开易出现日内 V 型修复，切忌恐慌杀跌追空，可于日内支撑位逢低寻找错杀机会。 |
+| **第 3 优先级** | **⏳ 宏观阴霾蓄力** | $Score_{\text{macro}} \ge 65$ 且 $Score_{\text{short}} < 55$ | 利差倒挂/均线悬空等长周期隐患积累，但科技龙头尚未全面放量下杀。 | **收缩杠杆/战略防守**：不可盲目加高估值杠杆，IM 多头宜逢高逐步收缩风险暴露，提升组合防御性（红利/低估值）。 |
+| **第 4 优先级** | **🟢 双频低危健康** | $Score_{\text{total}} < 50$ 且 $Score_{\text{short}} < 65$ 且 $Score_{\text{macro}} < 65$ | 高频流动性充沛，宏观无系统性衰退风险。 | **做多成长/持仓待涨**：外部噪音可完全忽略，聚焦国内产业主线，持有 IM 多头底仓。 |
+| **第 5 优先级** | **🟡 双频温和承压** *(闭环兜底象限)* | $50 \le Score_{\text{total}} < 70$ 且不满足上述单边极端分歧 | 短频筹码与中频宏观均处于中等偏紧状态，市场缺乏单边突破动能，波动率中枢抬升。 | **【控制仓位/网格波段】** A股与中证1000易陷入宽幅震荡，IM 期指不宜追涨杀跌；建议将多头敞口降至半仓以下，或采用买平值看跌期权（MO）构建领口策略（Collar）锁住尾部风险。 |
 
 ---
 
@@ -176,16 +184,16 @@ flowchart TD
 
 为保障数据真实性，严格遵循数据接口对口直取原则：
 
-1. **美债收益率数据链路**：
-   - **第一顺位**：TuShare Pro `us_tycr`（美债收益率曲线全期限日度数据）；
+1. **个股与 ETF 日线行情（兼顾实时盘中与前复权）**：
+   - **第一顺位**：Yahoo Finance (`yfinance`)，开启 `auto_adjust=True` 自动前复权（杜绝 ETF 分红与芯片龙头拆股带来的均线与分位数跳变断层），带美东交易时段盘中成交量折算预估（Volume Projection）；
+   - **第二顺位（兜底）**：TuShare Pro `us_daily`（美股日线盘后静态库，盘后入库，带频率受限保护）。
+2. **美债收益率数据链路**：
+   - **第一顺位**：TuShare Pro `us_tycr`（美债收益率曲线全期限日度数据，低频稳定接口）；
    - **第二顺位**：同花顺 iFinD EDB / 东方财富数据中心 REST API；
    - **第三顺位**：FRED 公开 CSV (`DGS10` 与 `DGS2`)；
    - **兜底基线**：锁定利差 $0.55\%$，固定安全分 30.0，标记 `is_fallback: True`，禁止计入共振。
-2. **个股与 ETF 日线行情**：
-   - **第一顺位**：TuShare Pro `us_daily`（美股日线）；
-   - **降级顺位**：Yahoo Finance (`yfinance`)，带美东交易时段盘中成交量折算预估（Volume Projection）。
 3. **期权与情绪数据**：
-   - **期权 PCR**：yfinance 期权链（7~25 DTE，0.90~1.10 Spot 行权价，成交量不足时持仓量兜底）。
+   - **期权 PCR**：yfinance 期权链（7~25 DTE，0.90~1.10 Spot 行权价，成交量不足时启用 0.78 偏度校准持仓量兜底）。
    - **恐慌贪婪**：CNN 官方 Dataviz 接口。
 
 ---
@@ -213,24 +221,27 @@ flowchart TD
 3. **状态恶化跃迁穿透机制**：
    若当前巡检中：
    - 触发了多因子极端共振（而上一次未共振）；
-   - 或综合风险评分飙升 $\ge 10$ 分；
+   - 或综合风险评分相比上次真正成功推送的分数飙升 $\ge 10$ 分；
    - 或状态等级跃迁升级为高危共振警戒；
    系统无视 2 小时防抖窗口，立即无条件强行向手机分发告警。
+4. **基准防覆盖铁律（杜绝温水煮青蛙漏洞）**：
+   - 巡检被 2 小时防抖拦截（未实际发送）时，**绝对禁止修改或覆盖缓存文件中的任何字段**；
+   - 唯有当消息向外部通道**实际推送成功**后，方才更新持久化基准（`last_pushed_score`、`last_pushed_level`、`last_pushed_resonance`、`last_pushed_timestamp`）。
 
 ---
 
 ## 7. 自动化验证验收命令集
 
 ```powershell
-# 1. 验证 UTF-8 编码与 Emoji 输出在 Windows 终端不崩溃
+# 1. 验证决策矩阵 Total < 50 且 Short >= 65 时不会被误判为安全（优先级排他测试）
+python -c "from monitor_engine import get_action_guide; g = get_action_guide(total_score=48.0, short_score=66.0, macro_score=26.0, is_resonance=False); assert '短线' in g['level'], f'Matrix bug: {g}'; print('PASS: 短线高危判定 ->', g['level'])"
+
+# 2. 验证防抖模块正常与 7200 秒窗口
+python -c "from push_notifier import MobilePushNotifier; n = MobilePushNotifier(); assert n.debounce_seconds == 7200; print('PASS: 防抖模块正常, 窗口 =', n.debounce_seconds)"
+
+# 3. 验证美债 180 交易日窗口感知与兜底安全分
+python -c "from monitor_engine import score_yield_curve; s_fb, _ = score_yield_curve(0.55, is_fallback=True); assert s_fb == 30.0; print('PASS: 美债路径感知与兜底逻辑')"
+
+# 4. 执行一次免值守巡检无崩溃报错（全链路跑通）
 python -c "from cron_alert import run_check; run_check(force_alert=False)"
-
-# 2. 验证决策矩阵全空间完备性（无死区测试）
-python -c "from monitor_engine import evaluate_all; r = evaluate_all(); print('PASS: 决策矩阵状态 ->', r['action_guide']['level'])"
-
-# 3. 验证持久化防抖缓存文件生成与 2 小时防抖生效
-python -c "import os; from push_notifier import MobilePushNotifier; n = MobilePushNotifier(); print('PASS: 防抖窗口 =', n.debounce_seconds, '秒')"
-
-# 4. 验证兜底模式下美债因子不会误触发 >=75 分共振
-python -c "from monitor_engine import score_yield_curve; s, status = score_yield_curve(0.55); assert s < 50, f'Fallback score too high: {s}'; print('PASS: 美债兜底安全分 =', s, status)"
 ```

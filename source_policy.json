@@ -1,8 +1,8 @@
 {
   "equity_daily": {
     "chain": [
-      "tushare_us_daily",
-      "yfinance"
+      "yfinance",
+      "tushare_us_daily"
     ],
     "authorized_fallback": true
   },
