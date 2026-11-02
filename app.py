@@ -18,10 +18,42 @@ try:
 except Exception:
     pass
 
+import json
+from datetime import datetime
+from push_notifier import MobilePushNotifier, CONFIG_FILE
+
 st.set_page_config(page_title="美股科技链与宏观流动性风险监测终端", layout="wide")
 
 st.title("🚨 美股科技链与宏观流动性双频风险监测终端")
 st.caption("分层架构：⚡ 战术级高频微观信号 (派发日/龙头量价背离/半导体RS/期权PCR) ✖ 🌐 战略级中长频宏观信号 (美债10Y-2Y曲线/200日均线乖离/CNN贪婪恐慌)")
+
+# =============================================================================
+# 侧边栏：手机端信息推送设置与即时测试
+# =============================================================================
+st.sidebar.header("📱 手机端信息推送")
+notifier = MobilePushNotifier()
+cfg = notifier.config
+channels = cfg.get("channels", {})
+
+with st.sidebar.expander("⚙️ 推送通道配置 (点击配置)", expanded=False):
+    st.caption("支持 微信服务号 / iOS Bark / 企微 / 钉钉 / 飞书 接收预警")
+    bark_in = st.text_input("🍎 iOS Bark 链接", value=channels.get("bark_url", ""), placeholder="https://api.day.app/your_key/")
+    pp_in = st.text_input("💬 微信 PushPlus Token", value=channels.get("pushplus_token", ""), type="password")
+    sc_in = st.text_input("💬 微信 Server酱 SendKey", value=channels.get("serverchan_sendkey", ""), type="password")
+    wecom_in = st.text_input("💼 企业微信 Webhook", value=channels.get("wecom_webhook", ""), type="password")
+    feishu_in = st.text_input("💼 飞书 Webhook", value=channels.get("feishu_webhook", ""), type="password")
+    ding_in = st.text_input("💼 钉钉 Webhook", value=channels.get("dingtalk_webhook", ""), type="password")
+
+    if st.button("💾 保存配置到本地", use_container_width=True):
+        cfg["channels"]["bark_url"] = bark_in.strip()
+        cfg["channels"]["pushplus_token"] = pp_in.strip()
+        cfg["channels"]["serverchan_sendkey"] = sc_in.strip()
+        cfg["channels"]["wecom_webhook"] = wecom_in.strip()
+        cfg["channels"]["feishu_webhook"] = feishu_in.strip()
+        cfg["channels"]["dingtalk_webhook"] = ding_in.strip()
+        CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        st.success("配置已保存到 push_config.json！")
+
 
 @st.cache_data(ttl=600)
 def load_all_market_data():
@@ -45,6 +77,23 @@ resonance = risk_result["resonance"]
 s_details = risk_result["short_term_details"]
 m_details = risk_result["macro_details"]
 guide = risk_result["action_guide"]
+
+# 侧边栏即时测试按钮
+if st.sidebar.button("🚀 测试发送手机推送", use_container_width=True):
+    test_title = f"【美股监控测试】综合风险分: {total_score}分"
+    test_content = (
+        f"**测试时间**：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        f"**状态定性**：{guide['level']}\n\n"
+        f"- ⚡ 高频短线: **{short_score}** 分\n"
+        f"- 🌐 中长宏观: **{macro_score}** 分\n"
+        f"- 🔥 多因子共振: {'已触发' if resonance['active'] else '未触发'}\n\n"
+        f"**A股/IM期指对冲建议**：\n{guide['im_strategy']}"
+    )
+    res = notifier.send_alert(test_title, test_content, force=True)
+    if res.get("ok"):
+        st.sidebar.success(f"推送已发出！通道结果: {res.get('details')}")
+    else:
+        st.sidebar.warning(f"推送未发出: {res.get('msg')}")
 
 # =============================================================================
 # 顶部总览卡片栏

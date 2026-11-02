@@ -1,5 +1,5 @@
 import time
-import requests
+import os
 from datetime import datetime
 from data_loader import (
     fetch_historical_data, 
@@ -10,20 +10,19 @@ from data_loader import (
     BENCHMARKS
 )
 from monitor_engine import CrashRiskEngine
+from push_notifier import MobilePushNotifier
 
-# 可选：配置你的钉钉 / 企业微信 Webhook 机器人链接
-WEBHOOK_URL = ""  # 例如: "https://oapi.dingtalk.com/robot/send?access_token=xxxx"
+notifier = MobilePushNotifier()
 
-def send_alert(message):
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ALERT] 风险警报: {message}")
-    if WEBHOOK_URL:
-        try:
-            payload = {"msgtype": "text", "text": {"content": f"[美股流动性双频监控] {message}"}}
-            requests.post(WEBHOOK_URL, json=payload, timeout=5)
-        except Exception as e:
-            print(f"Webhook 推送失败: {e}")
+def send_alert(title: str, content: str, force: bool = False):
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [ALERT] 正在分发手机端推送: {title}")
+    res = notifier.send_alert(title=title, content=content, force=force)
+    if not res.get("ok"):
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 推送提示: {res.get('msg')}")
+    else:
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 推送成功: {res.get('details')}")
 
-def run_check():
+def run_check(force_alert: bool = False):
     all_tickers = AI_LEADERS + list(BENCHMARKS.values())
     data_dict = fetch_historical_data(all_tickers, period="1y")
     pcr = fetch_put_call_ratio("QQQ")
@@ -42,18 +41,20 @@ def run_check():
     log_msg = f"综合: {total_score}分 (短频: {short_score} | 宏观: {macro_score}) | 共振: {resonance['active']} | 状态: {guide['level']}"
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 周期巡检完成 -> {log_msg}")
     
-    if total_score >= 70 or resonance["active"]:
-        alert_text = (
-            f"【美股双频监控高危警报】综合风险评分达到 {total_score} 分！\n"
-            f"- ⚡ 高频短线风险分: {short_score}\n"
-            f"- 🌐 中长宏观风险分: {macro_score}\n"
-            f"- 🔥 共振状态: {'已触发多因子极端共振' if resonance['active'] else '未触发'}\n"
-            f"- 🎯 对冲推演建议: {guide['im_strategy']}"
+    if total_score >= 70 or resonance["active"] or force_alert:
+        title = f"【美股双频预警】综合风险分突破 {total_score} 分！"
+        content = (
+            f"**状态定性**：{guide['level']}\n\n"
+            f"- ⚡ 高频短线风险: **{short_score}** 分\n"
+            f"- 🌐 中长宏观风险: **{macro_score}** 分\n"
+            f"- 🔥 极端共振: {'已触发多因子共振' if resonance['active'] else '未触发'}\n\n"
+            f"**核心诊断**：\n{guide['diagnosis']}\n\n"
+            f"**A股/IM期指对冲指引**：\n{guide['im_strategy']}"
         )
-        send_alert(alert_text)
+        send_alert(title, content, force=force_alert)
 
 if __name__ == "__main__":
-    print(">>> 启动美股流动性双频自动化巡检后台进程 (每15分钟检查一次)...")
+    print(">>> 启动美股流动性双频自动化巡检后台进程 (每15分钟检查一次，集成手机端多通道推送)...")
     while True:
         try:
             run_check()

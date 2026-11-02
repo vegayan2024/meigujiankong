@@ -47,8 +47,23 @@ python -m streamlit run app.py
 ```
 默认会在浏览器打开 `http://localhost:8501`。左右双栏分别呈现高频短期信号与中长期宏观信号。
 
-### 3. (可选) 启动后台免值守自动巡检脚本
+### 3. (可选) 启动后台免值守自动巡检与手机推送
 ```bash
 python cron_alert.py
 ```
-支持 Webhook 报警，当总评分 $\ge 70$ 分或触发多因子极端共振时自动推送对冲指引。
+当系统性综合风险评分 $\ge 70$ 分或触发多因子极端共振时，自动分发手机端预警并附带 A股/IM 期指对冲推演。
+
+---
+
+## 📱 手机端信息推送配置说明
+
+系统内置 `push_notifier.py` 多通道手机推送适配器，可通过编辑本地 `push_config.json` 或在 Streamlit 前端大屏左侧边栏配置：
+
+| 推送通道 | 适用手机端 | 特点与获取方式 |
+| :--- | :--- | :--- |
+| **🍎 Bark** | **iPhone / iPad** | **最推荐 (iOS 用户首选)**。在 App Store 下载 Bark，打开后复制专属链接（如 `https://api.day.app/your_key/`），锁屏直接弹窗并伴随自定义提醒铃声，零广告极简。 |
+| **💬 PushPlus (推送加)** | **微信直推 (Android/iOS)** | **最推荐 (微信用户首选)**。关注“pushplus推送加”公众号，在官网复制 Token，微信直接像收消息一样接收 Markdown 图文卡片。 |
+| **💬 Server酱 (Turbo)** | **微信直推 (Android/iOS)** | 微信服务号直推，填入 SendKey 即可。 |
+| **💼 企业微信 / 钉钉 / 飞书** | **办公 App 手机端** | 新建群聊 -> 添加群自定义机器人 -> 复制 Webhook 链接，App 实时推送。 |
+| **✈️ Telegram** | **全平台** | 境外/多端秒推，填入 Bot Token 与 Chat ID 即可。 |
+

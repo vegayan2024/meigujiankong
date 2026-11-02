@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "debounce_seconds": 600,
+  "channels": {
+    "bark_url": "",
+    "wecom_webhook": "",
+    "feishu_webhook": "",
+    "dingtalk_webhook": "",
+    "wxpusher_app_token": "",
+    "wxpusher_uids": [],
+    "pushplus_token": "",
+    "serverchan_sendkey": "",
+    "telegram_bot_token": "",
+    "telegram_chat_id": ""
+  }
+}
