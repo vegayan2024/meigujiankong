@@ -564,23 +564,68 @@ def fetch_put_call_ratio(ticker="QQQ"):
 # =============================================================================
 
 def _fg_cnn():
+    cache_file = CACHE_DIR / "cnn_fear_greed.json"
+    url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
     headers = {
         "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"),
         "Accept": "application/json,text/html,*/*;q=0.8",
         "Referer": "https://www.cnn.com/",
     }
-    resp = requests.get("https://production.dataviz.cnn.io/index/fearandgreed/graphdata", headers=headers, timeout=8)
-    resp.raise_for_status()
-    fg = resp.json().get("fear_and_greed") or {}
-    score = float(fg["score"])
-    if not 0 <= score <= 100:
-        raise ValueError(f"CNN 返回越界值 {score}")
-    return {"score": round(score, 1), "rating": fg.get("rating", "")}, str(fg.get("timestamp", ""))[:19]
+
+    # 1. 优先使用 curl_cffi 模拟真实浏览器 TLS 握手指纹（Chrome 124），解决 CDN 防火墙拦截导致的 SSLEOFError/418 报错
+    #    配置 3 次重试及退避间隔，抵御代理与跨国链路的瞬时网络抖动
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            try:
+                from curl_cffi import requests as c_requests
+                resp = c_requests.get(url, headers=headers, impersonate="chrome124", timeout=10)
+            except ImportError:
+                resp = requests.get(url, headers=headers, timeout=8)
+
+            resp.raise_for_status()
+            fg = resp.json().get("fear_and_greed") or {}
+            score = float(fg["score"])
+            if not 0 <= score <= 100:
+                raise ValueError(f"CNN 返回越界值 {score}")
+
+            as_of = str(fg.get("timestamp", ""))[:19]
+            val = {"score": round(score, 1), "rating": fg.get("rating", "")}
+
+            # 成功获取最新值后持久化落盘，作为极端断网时的兜底基线
+            try:
+                CACHE_DIR.mkdir(exist_ok=True)
+                cache_file.write_text(
+                    json.dumps({"value": val, "as_of": as_of, "saved_at": time.time()}, ensure_ascii=False, indent=2),
+                    encoding="utf-8"
+                )
+            except Exception:
+                pass
+
+            return val, as_of, None
+        except Exception as e:
+            last_err = e
+            if attempt < 3:
+                time.sleep(attempt * 1.0)
+
+    # 2. 网络彻底中断或多次重试均失败时：若本地存在历史有效定盘缓存，优雅降级兜底并全程透明通报
+    if cache_file.exists():
+        try:
+            cached_data = json.loads(cache_file.read_text(encoding="utf-8"))
+            val = cached_data["value"]
+            val["is_fallback_cache"] = True
+            as_of = cached_data.get("as_of", "")
+            return val, as_of, f"网络请求失败({_safe_err(last_err)})，已启用本地最近有效定盘缓存兜底"
+        except Exception:
+            pass
+
+    raise RuntimeError(f"CNN Fear & Greed 请求失败(重试3次): {_safe_err(last_err)}")
 
 
 def fetch_fear_and_greed():
     return _run_chain("fear_greed", {"cnn_dataviz": _fg_cnn})
+
 
 
 # =============================================================================
@@ -619,6 +664,10 @@ def build_data_status(bundle):
     if pcr["ok"] and pcr["value"].get("method") == "open_interest":
         issues.append({"level": "note", "item": "QQQ期权PCR",
                        "detail": "过滤后成交量不足1000张，本次按持仓量(Open Interest)口径计算PCR"})
+    fg = bundle["fear_greed"]
+    if fg["ok"] and isinstance(fg.get("value"), dict) and fg["value"].get("is_fallback_cache"):
+        issues.append({"level": "secondary", "item": "CNN恐慌贪婪指数",
+                       "detail": f"网络重试后不可达，已自动启用最近有效定盘缓存（数据时间：{fg.get('as_of', '未知')}）"})
     return issues
 
 
