@@ -29,7 +29,7 @@ notifier = MobilePushNotifier()
 cfg = notifier.config
 channels = cfg.get("channels", {})
 
-if st.sidebar.button("🔄 强制刷新最新定盘数据", use_container_width=True):
+if st.sidebar.button("🔄 强制刷新最新定盘数据", width="stretch"):
     st.cache_data.clear()
     st.rerun()
 
@@ -42,7 +42,7 @@ with st.sidebar.expander("⚙️ 推送通道配置 (点击配置)", expanded=Fa
     feishu_in = st.text_input("💼 飞书 Webhook", value=channels.get("feishu_webhook", ""), type="password")
     ding_in = st.text_input("💼 钉钉 Webhook", value=channels.get("dingtalk_webhook", ""), type="password")
 
-    if st.button("💾 保存配置到本地", use_container_width=True):
+    if st.button("💾 保存配置到本地", width="stretch"):
         cfg["channels"]["bark_url"] = bark_in.strip()
         cfg["channels"]["pushplus_token"] = pp_in.strip()
         cfg["channels"]["serverchan_sendkey"] = sc_in.strip()
@@ -98,7 +98,7 @@ guide = risk_result["action_guide"]
 is_deficient = risk_result.get("is_deficient", False)
 
 # 侧边栏即时测试按钮
-if st.sidebar.button("🚀 测试发送手机推送", use_container_width=True):
+if st.sidebar.button("🚀 测试发送手机推送", width="stretch"):
     test_score_str = f"{total_score}分" if total_score is not None else "数据熔断"
     test_title = f"【美股定盘测试】综合风险: {test_score_str}"
     test_content = (
@@ -219,7 +219,7 @@ with col_short:
             xaxis_title="交易日期",
             yaxis_title="相对强弱比 (上行代表芯片强于标普)"
         )
-        st.plotly_chart(fig_rs, use_container_width=True)
+        st.plotly_chart(fig_rs, width="stretch")
 
 # -----------------------------------------------------------------------------
 # 右栏：🌐 战略级中长频宏观信号专栏
@@ -290,7 +290,7 @@ with col_macro:
         height=280,
         margin=dict(l=40, r=40, t=20, b=20)
     )
-    st.plotly_chart(fig_radar, use_container_width=True)
+    st.plotly_chart(fig_radar, width="stretch")
 
 st.markdown("---")
 
