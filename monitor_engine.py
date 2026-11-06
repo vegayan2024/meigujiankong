@@ -75,48 +75,64 @@ def score_yield_curve(spread: float, is_fallback: bool = False, spread_history=N
 
 
 class CrashRiskEngine:
-    def __init__(self, data_dict=None, pcr_val=1.0, treasury_data=None, fear_greed_data=None):
+    def __init__(self, data_dict=None, pcr_val=None, treasury_data=None, fear_greed_data=None, pcr=None):
         self.data = data_dict or {}
-        self.pcr = self._unpack_pcr(pcr_val)
+        actual_pcr = pcr if pcr is not None else pcr_val
+        self.pcr = self._unpack_pcr(actual_pcr)
         self.treasury = self._unpack_treasury(treasury_data)
         self.fear_greed = self._unpack_fear_greed(fear_greed_data)
 
     def _unpack_pcr(self, pcr_val):
+        if pcr_val is None:
+            return None
         if isinstance(pcr_val, dict):
+            if pcr_val.get("ok") is False:
+                return None
             val = pcr_val.get("value") if "value" in pcr_val else pcr_val
             if isinstance(val, dict):
-                return float(val.get("pcr", 1.0))
+                p = val.get("pcr")
+                return float(p) if p is not None else None
             try:
-                return float(val)
+                return float(val) if val is not None else None
             except Exception:
-                return 1.0
+                return None
         try:
             return float(pcr_val)
         except Exception:
-            return 1.0
+            return None
 
     def _unpack_treasury(self, t_data):
         if not t_data:
-            return {"spread": 0.55, "us_2y": 4.5, "us_10y": 5.05, "source": "默认安全基准", "is_fallback": True}
-        if isinstance(t_data, dict) and "value" in t_data and isinstance(t_data["value"], dict):
-            d = dict(t_data["value"])
-            d["source"] = t_data.get("source", "外部接口")
-            d["tier"] = t_data.get("tier", "secondary")
-            return d
+            return {"spread": 0.55, "us_2y": 4.5, "us_10y": 5.05, "source": "数据缺失兜底", "is_fallback": True, "is_missing": True}
         if isinstance(t_data, dict):
-            return t_data
-        return {"spread": 0.55, "us_2y": 4.5, "us_10y": 5.05, "source": "默认安全基准", "is_fallback": True}
+            if t_data.get("ok") is False:
+                return {"spread": 0.55, "us_2y": 4.5, "us_10y": 5.05, "source": "取数失败兜底", "is_fallback": True, "is_missing": True}
+            if "value" in t_data and isinstance(t_data["value"], dict):
+                d = dict(t_data["value"])
+                d["source"] = t_data.get("source", "外部接口")
+                d["tier"] = t_data.get("tier", "secondary")
+                d["is_missing"] = False
+                return d
+            d = dict(t_data)
+            d["is_missing"] = False
+            return d
+        return {"spread": 0.55, "us_2y": 4.5, "us_10y": 5.05, "source": "默认安全基准", "is_fallback": True, "is_missing": True}
 
     def _unpack_fear_greed(self, fg_data):
         if not fg_data:
-            return {"score": 50.0, "rating": "neutral", "source": "默认中性"}
-        if isinstance(fg_data, dict) and "value" in fg_data and isinstance(fg_data["value"], dict):
-            d = dict(fg_data["value"])
-            d["source"] = fg_data.get("source", "CNN")
-            return d
+            return {"score": None, "rating": "unknown", "source": "数据缺失", "is_missing": True}
         if isinstance(fg_data, dict):
-            return fg_data
-        return {"score": 50.0, "rating": "neutral", "source": "默认中性"}
+            if fg_data.get("ok") is False:
+                return {"score": None, "rating": "unknown", "source": "取数失败", "is_missing": True}
+            if "value" in fg_data and isinstance(fg_data["value"], dict):
+                d = dict(fg_data["value"])
+                d["source"] = fg_data.get("source", "CNN")
+                d["is_missing"] = False
+                return d
+            d = dict(fg_data)
+            d["is_missing"] = False
+            return d
+        return {"score": 50.0, "rating": "neutral", "source": "默认中性", "is_missing": False}
 
     # =========================================================================
     # 一、战术级高频短期信号 (Tactical Short-Term Signals)
@@ -130,21 +146,23 @@ class CrashRiskEngine:
         则最低点之前的旧派发日权重减半（按 0.5 次计）。
         """
         if ticker not in self.data or self.data[ticker].empty:
-            return 0.0, 0.0
-        df = self.data[ticker].tail(window).copy()
-        if len(df) < 5:
-            return 0.0, 0.0
+            return None, None
+        full_df = self.data[ticker]
+        if len(full_df) < window + 1:
+            return None, None
+        df = full_df.tail(window + 1).copy()
 
-        pct_change = df["Close"].pct_change()
-        vol_change = df["Volume"].pct_change()
+        pct_change = df["Close"].pct_change().iloc[1:]
+        vol_change = df["Volume"].pct_change().iloc[1:]
+        sub_df = df.iloc[1:]
 
         dist_days = (pct_change <= -0.002) & (vol_change > 0)
 
         # 欧奈尔反转重置判定
-        low_idx = df["Close"].idxmin()
-        lowest_close = float(df["Close"].loc[low_idx])
-        current_close = float(df["Close"].iloc[-1])
-        sma20 = float(df["Close"].rolling(20, min_periods=5).mean().iloc[-1])
+        low_idx = sub_df["Close"].idxmin()
+        lowest_close = float(sub_df["Close"].loc[low_idx])
+        current_close = float(sub_df["Close"].iloc[-1])
+        sma20 = float(full_df["Close"].rolling(20, min_periods=5).mean().iloc[-1])
         rebound_pct = (current_close - lowest_close) / max(lowest_close, 1e-6)
         is_reversal = (rebound_pct >= 0.06) and (current_close > sma20)
 
@@ -167,12 +185,14 @@ class CrashRiskEngine:
         条件 3: 动能衰竭确认 (近5日至少2天上影线/阴线，或 14日RSI 较20日峰值回落超5点)
         """
         divergence_flags = []
+        valid_tickers = []
         for tk in tickers:
             if tk not in self.data or self.data[tk].empty:
                 continue
             df = self.data[tk].tail(60).copy()
             if len(df) < 30:
                 continue
+            valid_tickers.append(tk)
 
             recent_close = float(df["Close"].iloc[-1])
             high_20 = float(df["Close"].rolling(20).max().iloc[-1])
@@ -184,11 +204,14 @@ class CrashRiskEngine:
             near_top = (recent_close / max(high_20, 1e-6)) >= 0.97
             vol_exhausted = (current_vol_sma / max(vol_peak, 1.0)) <= 0.75
 
-            # 动能衰竭双重校验
+            # 动能衰竭双重校验 (上影线或RSI背离)
             recent_5 = df.tail(5)
-            high_low_span = recent_5["High"] - recent_5["Low"] + 1e-6
-            upper_shadow = (recent_5["High"] - recent_5["Close"]) / high_low_span
-            shadow_exhausted = int((upper_shadow > 0.6).sum()) >= 2
+            if "High" in df.columns and "Low" in df.columns:
+                high_low_span = recent_5["High"] - recent_5["Low"] + 1e-6
+                upper_shadow = (recent_5["High"] - recent_5["Close"]) / high_low_span
+                shadow_exhausted = int((upper_shadow > 0.6).sum()) >= 2
+            else:
+                shadow_exhausted = False
 
             # 14日 RSI 顶背离检测
             delta = df["Close"].diff()
@@ -203,7 +226,9 @@ class CrashRiskEngine:
             if near_top and vol_exhausted and (shadow_exhausted or rsi_divergence):
                 divergence_flags.append(tk)
 
-        ratio = len(divergence_flags) / max(len(tickers), 1)
+        if not valid_tickers:
+            return [], None
+        ratio = len(divergence_flags) / len(valid_tickers)
         score = ratio * 100.0
         return divergence_flags, round(score, 1)
 
@@ -213,11 +238,11 @@ class CrashRiskEngine:
         消除跳变断层，兼顾正常板块轮动与崩塌预警。
         """
         if leader not in self.data or bench not in self.data:
-            return 0.0, 0.0
+            return None, None
         df_l = self.data[leader]["Close"].tail(window)
         df_b = self.data[bench]["Close"].tail(window)
-        if len(df_l) < 2 or len(df_b) < 2:
-            return 0.0, 0.0
+        if len(df_l) < window or len(df_b) < window:
+            return None, None
 
         rs_ratio = df_l / df_b
         rs_slope = float((rs_ratio.iloc[-1] - rs_ratio.iloc[0]) / max(rs_ratio.iloc[0], 1e-6))
@@ -245,7 +270,9 @@ class CrashRiskEngine:
         """
         短频因子 4: 近月期权 PCR 异动评分
         """
-        pcr = self.pcr
+        if self.pcr is None:
+            return None, None
+        pcr = float(self.pcr)
         if pcr <= 0.7:
             score = 15.0
         elif pcr <= 1.0:
@@ -264,6 +291,8 @@ class CrashRiskEngine:
         """
         中频宏观因子 1: 美债 10Y-2Y 收益率曲线利差 (带路径感知与兜底安全约束)
         """
+        if self.treasury.get("is_missing"):
+            return None, None, "美债数据缺失"
         spread = float(self.treasury.get("spread", 0.55))
         is_fallback = bool(self.treasury.get("is_fallback", False))
         spread_history = self.treasury.get("spread_history")
@@ -275,10 +304,10 @@ class CrashRiskEngine:
         中频技术因子 2: 标普500针对 200日均线的乖离率
         """
         if ticker not in self.data or self.data[ticker].empty:
-            return 0.0, 30.0, "数据暂缺"
+            return None, None, "标普数据缺失"
         df = self.data[ticker]
         if len(df) < 200:
-            return 0.0, 30.0, "样本不足200日"
+            return None, None, f"样本不足200日 (仅{len(df)}日)"
 
         current_close = float(df["Close"].iloc[-1])
         sma200 = float(df["Close"].rolling(200).mean().iloc[-1])
@@ -309,6 +338,8 @@ class CrashRiskEngine:
         """
         中频情绪因子 3: CNN 恐慌与贪婪指数
         """
+        if self.fear_greed.get("is_missing") or self.fear_greed.get("score") is None:
+            return None, None, "恐慌贪婪数据缺失"
         fg_score = float(self.fear_greed.get("score", 50.0))
         if fg_score >= 80:
             score = 95.0
@@ -333,31 +364,40 @@ class CrashRiskEngine:
     # =========================================================================
 
     def evaluate_overall_risk(self):
-        # 1. 战术级高频短期信号计算
+        # 1. 战术级短期信号计算
         dist_count, s_dist = self.calc_distribution_days()
         div_tickers, s_vol = self.calc_volume_divergence(["NVDA", "MSFT", "AVGO", "GOOGL", "TSM"])
         rs_val, s_rs = self.calc_relative_strength_divergence()
         pcr_val, s_pcr = self.calc_options_sentiment()
 
-        # 短期加权: 派发日 30%, 龙头背离 25%, 科技RS 25%, 期权PCR 20%
-        short_term_score = (
-            s_dist * 0.30 +
-            s_vol * 0.25 +
-            s_rs * 0.25 +
-            s_pcr * 0.20
-        )
+        # 动态归一化短期加权 (基准权重: 派发日 30%, 龙头背离 25%, 科技RS 25%, 期权PCR 20%)
+        short_weights = {"dist": 0.30, "vol": 0.25, "rs": 0.25, "pcr": 0.20}
+        short_scores = {"dist": s_dist, "vol": s_vol, "rs": s_rs, "pcr": s_pcr}
+        valid_short = {k: v for k, v in short_scores.items() if v is not None}
+
+        if len(valid_short) >= 2:
+            total_sw = sum(short_weights[k] for k in valid_short)
+            short_term_score = sum(valid_short[k] * (short_weights[k] / total_sw) for k in valid_short)
+            short_term_score = round(short_term_score, 1)
+        else:
+            short_term_score = None
 
         # 2. 战略级中长频宏观信号计算
         spread_val, s_spread, spread_status = self.calc_yield_curve_risk()
         sma_dev_val, s_sma, sma_status = self.calc_sp500_sma_deviation()
         fg_val, s_fg, fg_status = self.calc_macro_sentiment()
 
-        # 宏观中频加权: 美债利差 40%, 200日均线乖离 30%, 恐慌贪婪 30%
-        macro_score = (
-            s_spread * 0.40 +
-            s_sma * 0.30 +
-            s_fg * 0.30
-        )
+        # 动态归一化宏观加权 (基准权重: 美债利差 40%, 200日均线乖离 30%, 恐慌贪婪 30%)
+        macro_weights = {"spread": 0.40, "sma": 0.30, "fg": 0.30}
+        macro_scores = {"spread": s_spread, "sma": s_sma, "fg": s_fg}
+        valid_macro = {k: v for k, v in macro_scores.items() if v is not None}
+
+        if len(valid_macro) >= 2:
+            total_mw = sum(macro_weights[k] for k in valid_macro)
+            macro_score = sum(valid_macro[k] * (macro_weights[k] / total_mw) for k in valid_macro)
+            macro_score = round(macro_score, 1)
+        else:
+            macro_score = None
 
         # 3. 多因子极端共振检测
         all_factors = {
@@ -369,19 +409,22 @@ class CrashRiskEngine:
             "标普200日均线乖离": s_sma,
             "宏观贪婪/恐慌": s_fg
         }
-        # 严禁兜底数据触发共振计数
-        if self.treasury.get("is_fallback"):
+        if self.treasury.get("is_fallback") or self.treasury.get("is_missing"):
             all_factors.pop("美债利差倒挂/走陡", None)
 
-        extreme_factors = [name for name, val in all_factors.items() if val >= 75.0]
+        extreme_factors = [name for name, val in all_factors.items() if val is not None and val >= 75.0]
         extreme_count = len(extreme_factors)
-
         resonance_active = extreme_count >= 3
         resonance_boost = 12.0 if extreme_count >= 4 else (8.0 if extreme_count == 3 else 0.0)
 
-        # 综合评分: 短期战术占 55%，中频宏观占 45%，叠加共振加分
-        base_combined = short_term_score * 0.55 + macro_score * 0.45
-        total_score = min(round(base_combined + resonance_boost, 1), 100.0)
+        total_valid_factors = len(valid_short) + len(valid_macro)
+        if short_term_score is None or macro_score is None or total_valid_factors < 4:
+            total_score = None
+            is_deficient = True
+        else:
+            base_combined = short_term_score * 0.55 + macro_score * 0.45
+            total_score = min(round(base_combined + resonance_boost, 1), 100.0)
+            is_deficient = False
 
         # 4. 生成完备无死区 A股 / 中证1000 (IM) 联动对冲推演行动指引
         action_guide = self._generate_hedging_guide(
@@ -390,8 +433,10 @@ class CrashRiskEngine:
 
         return {
             "total_score": total_score,
-            "short_term_score": round(short_term_score, 1),
-            "macro_score": round(macro_score, 1),
+            "short_term_score": short_term_score,
+            "macro_score": macro_score,
+            "is_deficient": is_deficient,
+            "valid_factors_count": total_valid_factors,
             "resonance": {
                 "active": resonance_active,
                 "boost": resonance_boost,
@@ -401,7 +446,7 @@ class CrashRiskEngine:
             "short_term_details": {
                 "distribution_days": {"count": dist_count, "score": s_dist},
                 "volume_divergence": {"flagged": div_tickers, "score": s_vol},
-                "rs_divergence": {"rs_slope_pct": round(rs_val * 100, 2), "score": s_rs},
+                "rs_divergence": {"rs_slope_pct": round(rs_val * 100, 2) if rs_val is not None else None, "score": s_rs},
                 "options_pcr": {"pcr_value": pcr_val, "score": s_pcr}
             },
             "macro_details": {
@@ -425,16 +470,18 @@ class CrashRiskEngine:
         )
 
 
-def get_action_guide(total_score: float, short_score: float, macro_score: float, is_resonance: bool = False, extreme_factors=None):
+def get_action_guide(total_score, short_score, macro_score, is_resonance: bool = False, extreme_factors=None):
     """
     完备互斥五阶梯状态机决策路由器 (导出独立函数)
-    优先级顺序：
-      第 1 优先级: 🚨 高危共振警戒 (Score_total >= 70 或 is_resonance)
-      第 2 优先级: ⚠️ 短线战术分歧 (Score_short >= 65 且 Score_macro < 55)
-      第 3 优先级: ⏳ 宏观阴霾蓄力 (Score_macro >= 65 且 Score_short < 55)
-      第 4 优先级: 🟢 双频低危健康 (Score_total < 50，已排他排除 short/macro 单边 >= 65)
-      第 5 优先级: 🟡 双频温和承压 (else: 50 <= Score_total < 70 且无单边极端分歧)
     """
+    if total_score is None or short_score is None or macro_score is None:
+        return {
+            "level": "⚠️ [数据缺失/不可定性] (Insufficient Data)",
+            "color": "gray",
+            "diagnosis": "有效风险因子覆盖率不足，无法真实反映美股系统性风险，系统已强制进入避险中性保护状态，杜绝由于接口缺数导致的虚假低危安全。",
+            "im_strategy": "【严禁盲目依据残缺数据单边做多】当前海外风险因子尚未完全定盘，A股与中证1000（IM）期指切勿盲目扩大做多敞口，建议保持观望或维持既有对冲底仓。"
+        }
+
     extreme_list = extreme_factors or []
     im_risk_warning = (
         "\n\n> **【基差风控提示】** 开空 IM 期指前务必核查当前年化贴水率；"

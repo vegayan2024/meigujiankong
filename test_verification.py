@@ -96,6 +96,56 @@ def run_tests():
     run_check(force_alert=False)
     print("[TEST 5 PASS] cron_alert 运行无异常，Emoji 输出正常")
 
+    # 6. 验证核心数据缺失熔断机制 (Circuit Breaker)
+    print("[TEST 6 RUN] 验证数据缺失熔断保护机制...")
+    engine_empty = CrashRiskEngine(data_dict={}, pcr=None, treasury_data=None, fear_greed_data=None)
+    res_empty = engine_empty.evaluate_overall_risk()
+    assert res_empty["total_score"] is None, "Empty data must yield None total_score"
+    assert res_empty["is_deficient"] is True, "Empty data must set is_deficient=True"
+    assert "数据缺失" in res_empty["action_guide"]["level"], "Level must indicate missing data"
+    print(f"[TEST 6 PASS] 空数据触发熔断保护 -> {res_empty['action_guide']['level']}")
+
+    # 7. 验证动态权重自适应归一化 (无 PCR 条件下战术评分)
+    print("[TEST 7 RUN] 验证无 PCR 条件下战术因子动态权重归一化...")
+    # 构造充足的日线数据 (30日以上)
+    dates_long = pd.date_range("2026-01-01", periods=35)
+    def make_mock_df(base_price=100.0, step=1.0):
+        closes = [base_price + i * step for i in range(35)]
+        return pd.DataFrame({
+            "Open": closes,
+            "High": [c + 1.0 for c in closes],
+            "Low": [c - 1.0 for c in closes],
+            "Close": closes,
+            "Volume": [1000.0] * 35
+        }, index=dates_long)
+
+    df_qqq = make_mock_df(100.0, 1.0)
+    df_spy_l = make_mock_df(100.0, 0.5)
+    df_smh_l = make_mock_df(100.0, 1.5)
+    data_mock = {"QQQ": df_qqq, "SPY": df_spy_l, "SMH": df_smh_l}
+    for tk in ["NVDA", "MSFT", "AVGO", "GOOGL", "TSM"]:
+        data_mock[tk] = make_mock_df(100.0, 0.2)
+
+    treasury_mock = {"spread": 0.55, "spread_history": None, "source": "test", "is_fallback": False, "is_missing": False}
+    fg_mock = {"score": 50.0, "rating": "neutral", "source": "test", "is_missing": False}
+
+    # PCR 为 None 时，剩余派发日、量价背离、RS相对强弱动态加权 (30:25:25 归一化)
+    engine_no_pcr = CrashRiskEngine(data_dict=data_mock, pcr=None, treasury_data=treasury_mock, fear_greed_data=fg_mock)
+    res_no_pcr = engine_no_pcr.evaluate_overall_risk()
+    assert res_no_pcr["short_term_score"] is not None, "Short term score must not be None when 3 factors present"
+    assert res_no_pcr["short_term_details"]["options_pcr"]["score"] is None, "PCR score must be None"
+    print(f"[TEST 7 PASS] 无 PCR 条件下动态归一化战术分: {res_no_pcr['short_term_score']} 分 (成功重分配权重)")
+
+    # 8. 验证去伪高频：成交量倍数与内插估算彻底清除
+    print("[TEST 8 RUN] 验证去伪高频特征...")
+    from data_loader import _equity_yf
+    import inspect
+    import data_loader
+    dl_source = inspect.getsource(data_loader)
+    assert "_project_intraday_volume" not in dl_source, "Old _project_intraday_volume must be deleted"
+    assert "390 / elapsed" not in dl_source, "Intraday volume scaling must be completely deleted"
+    print("[TEST 8 PASS] 伪高频线性成交量放大器已彻底拔除，日线数据完全保留收盘定盘真实成交量")
+
     print("=" * 60)
     print("ALL TESTS PASSED SUCCESSFULLY! (100% 验收通过)")
     print("=" * 60)

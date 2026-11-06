@@ -1,17 +1,16 @@
 {
   "equity_daily": {
     "chain": [
-      "yfinance",
-      "tushare_us_daily"
+      "yfinance"
     ],
     "authorized_fallback": true
   },
   "treasury": {
     "chain": [
       "tushare_us_tycr",
-      "ifind_edb",
       "eastmoney",
-      "fred_csv"
+      "fred_csv",
+      "ifind_edb"
     ],
     "authorized_fallback": true
   },

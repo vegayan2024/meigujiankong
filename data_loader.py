@@ -13,6 +13,7 @@
 import os
 import sys
 import json
+import time
 import warnings
 from pathlib import Path
 from datetime import datetime, timedelta, date
@@ -54,13 +55,16 @@ SOURCE_LABELS = {
 
 # 每个数据域的取数顺位。chain[0] 为第一顺位；其余仅在 authorized_fallback=true 时启用。
 DEFAULT_POLICY = {
-    "treasury": {"chain": ["tushare_us_tycr", "ifind_edb", "eastmoney", "fred_csv"], "authorized_fallback": False},
-    "equity_daily": {"chain": ["yfinance", "tushare_us_daily"], "authorized_fallback": False},
+    "treasury": {"chain": ["tushare_us_tycr", "eastmoney", "fred_csv", "ifind_edb"], "authorized_fallback": False},
+    "equity_daily": {"chain": ["yfinance"], "authorized_fallback": False},
     "options_pcr": {"chain": ["yfinance_options"], "authorized_fallback": False},
     "fear_greed": {"chain": ["cnn_dataviz"], "authorized_fallback": False},
 }
 
-_TS_BLOCKED_UNTIL = 0.0  # TuShare us_daily 频率限制冷却截止时间戳
+_TS_BLOCKED_UNTIL = 0.0  # TuShare 频率限制冷却截止时间戳
+_YF_BLOCKED_UNTIL = 0.0  # yfinance/Yahoo 429 全局冷却截止时间戳（日线与期权链共享）
+YF_CACHE_TTL_SEC = 43200  # 定盘本地缓存 TTL：12 小时（每天定盘后可持久复用，免重复网络请求）
+YF_BLOCK_SEC = 1800      # 命中 Yahoo 429 后的全局冷却时长：30 分钟，避免持续打满限流
 
 
 # =============================================================================
@@ -102,8 +106,37 @@ def _safe_err(e):
     return text[:240]
 
 
+def _raise_if_yf_rate_limit(e):
+    """Yahoo 429 判定：命中则置全局冷却并抛出透明错误；非限流异常原样放行。"""
+    global _YF_BLOCKED_UNTIL
+    text = str(e)
+    is_rate_limit = (
+        type(e).__name__ == "YFRateLimitError"
+        or "Too Many Requests" in text
+        or "Rate limited" in text
+    )
+    if not is_rate_limit:
+        return
+    _YF_BLOCKED_UNTIL = time.time() + YF_BLOCK_SEC
+    mins = YF_BLOCK_SEC // 60
+    raise RuntimeError(
+        f"yfinance 触发 Yahoo 429 限流，已进入 {mins} 分钟全局冷却（期间日线与期权链均跳过网络请求）: {_safe_err(e)}"
+    )
+
+
+def _yf_cooldown_remaining_min():
+    """yfinance 429 冷却剩余分钟数；未在冷却中返回 0。"""
+    if time.time() >= _YF_BLOCKED_UNTIL:
+        return 0
+    return int((_YF_BLOCKED_UNTIL - time.time()) / 60) + 1
+
+
 def _run_chain(domain, fetchers):
-    """按 source_policy 顺位取数。返回带完整溯源信息的结果字典。"""
+    """按 source_policy 顺位取数。返回带完整溯源信息的结果字典。
+
+    fetcher 约定返回 (value, as_of) 或 (value, as_of, note)；
+    note 用于透明标注"本地缓存命中"等非网络获取状态。
+    """
     cfg = load_policy()[domain]
     chain = cfg.get("chain", [])
     allow = bool(cfg.get("authorized_fallback", False))
@@ -121,9 +154,13 @@ def _run_chain(domain, fetchers):
             res["attempts"].append({"source": name, "status": "failed", "error": "未实现的数据源"})
             continue
         try:
-            value, as_of = fn()
+            out = fn()
+            value, as_of, note = (out if len(out) == 3 else (*out, None))
             res.update(ok=True, value=value, source=name, tier="primary" if i == 0 else "secondary", as_of=as_of)
-            res["attempts"].append({"source": name, "status": "ok"})
+            attempt = {"source": name, "status": "ok"}
+            if note:
+                attempt["note"] = note
+            res["attempts"].append(attempt)
             return res
         except Exception as e:
             res["attempts"].append({"source": name, "status": "failed", "error": _safe_err(e)})
@@ -176,6 +213,14 @@ def _treasury_pack(dates, y2, y10, label):
 
 
 def _treasury_tushare():
+    cache = CACHE_DIR / "tushare_us_tycr.csv"
+    if cache.exists() and (time.time() - cache.stat().st_mtime) < YF_CACHE_TTL_SEC:
+        try:
+            df = pd.read_csv(cache)
+            if not df.empty and "date" in df.columns:
+                return _treasury_pack(df["date"].astype(str), df["y2"].astype(float), df["y10"].astype(float), "TuShare (缓存)")
+        except Exception:
+            pass
     pro = _ts_pro()
     end = datetime.now()
     start = end - timedelta(days=400)
@@ -183,7 +228,10 @@ def _treasury_tushare():
     if df is None or df.empty:
         raise ValueError("TuShare us_tycr 返回空")
     df = df.dropna(subset=["y2", "y10"])
+    CACHE_DIR.mkdir(exist_ok=True)
+    df.to_csv(cache, index=False)
     return _treasury_pack(df["date"].astype(str), df["y2"].astype(float), df["y10"].astype(float), "TuShare")
+
 
 
 def _treasury_ifind():
@@ -265,28 +313,12 @@ def _standardize_ohlcv(df):
     return df
 
 
-def _project_intraday_volume(df):
-    """美股盘中最后一根日K未收盘：按已开盘分钟数把成交量折算为全天预估量。"""
-    now = datetime.now(NY_TZ)
-    if df.empty or now.weekday() >= 5 or df.index[-1].date() != now.date():
-        return df, None
-    open_t = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    close_t = now.replace(hour=16, minute=0, second=0, microsecond=0)
-    if not (open_t <= now < close_t):
-        return df, None
-    elapsed = max((now - open_t).total_seconds() / 60.0, 15.0)
-    k = min(390.0 / elapsed, 10.0)
-    df = df.copy()
-    df.iloc[-1, df.columns.get_loc("Volume")] *= k
-    return df, {"factor": round(k, 2), "elapsed_min": int(elapsed)}
-
-
 def _equity_tushare(ticker):
     global _TS_BLOCKED_UNTIL
     cache = CACHE_DIR / f"tushare_us_daily_{ticker}.csv"
-    if cache.exists() and datetime.fromtimestamp(cache.stat().st_mtime).date() == date.today():
+    if cache.exists() and (time.time() - cache.stat().st_mtime) < YF_CACHE_TTL_SEC:
         df = pd.read_csv(cache, parse_dates=["Date"], index_col="Date")
-        return {"df": df, "projected": None, "cached": True}, str(df.index[-1].date())
+        return {"df": df, "cached": True}, str(df.index[-1].date())
     if datetime.now().timestamp() < _TS_BLOCKED_UNTIL:
         raise RuntimeError("TuShare us_daily 已触发频率限制，冷却期内跳过")
     pro = _ts_pro()
@@ -307,36 +339,78 @@ def _equity_tushare(ticker):
     df = _standardize_ohlcv(raw)
     CACHE_DIR.mkdir(exist_ok=True)
     df.to_csv(cache, index_label="Date")
-    return {"df": df, "projected": None, "cached": False}, str(df.index[-1].date())
+    return {"df": df, "cached": False}, str(df.index[-1].date())
 
 
 def _equity_yf(ticker):
+    """Yahoo 真实定盘日线：12 小时本地缓存优先 → 429 冷却短路 → 网络拉取（填充最新未结算定盘价）。"""
+    cache = CACHE_DIR / f"yf_daily_{ticker}.csv"
+
+    # 1) TTL 缓存命中：定盘数据无需日内高频重复获取
+    if cache.exists() and (time.time() - cache.stat().st_mtime) < YF_CACHE_TTL_SEC:
+        df = pd.read_csv(cache, parse_dates=["Date"], index_col="Date")
+        if not df.empty and len(df) >= 20:
+            note = f"命中定盘本地缓存"
+            return {"df": df, "cached": True}, str(df.index[-1].date()), note
+
+    # 2) 429 全局冷却：跳过网络请求，快速交由下一顺位/上层如实记缺失
+    remain = _yf_cooldown_remaining_min()
+    if remain > 0:
+        raise RuntimeError(f"yfinance 处于 Yahoo 429 冷却期（剩余约 {remain} 分钟），本轮跳过网络请求")
+
     import yfinance as yf
-    df = None
+    df, last_err = None, None
+    tk = None
     try:
         tk = yf.Ticker(ticker)
         # 启用 auto_adjust=True 自动前复权，杜绝 ETF 分红与拆股均线跳空及分位数失真
         df = tk.history(period="2y", auto_adjust=True)
         if df is None or df.empty:
             df = tk.history(period="1y", auto_adjust=True)
-    except Exception:
-        df = None
+    except Exception as e:
+        _raise_if_yf_rate_limit(e)  # 429 → 置全局冷却并透明抛出
+        last_err, df = e, None
 
     if df is None or df.empty:
         try:
             df = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
-        except Exception:
-            pass
+        except Exception as e:
+            _raise_if_yf_rate_limit(e)
+            last_err, df = e, None
 
     if df is None or df.empty:
-        raise ValueError(f"yfinance {ticker} 返回空")
+        suffix = f"（末次错误: {_safe_err(last_err)}）" if last_err is not None else ""
+        raise ValueError(f"yfinance {ticker} 返回空{suffix}")
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [c[0] for c in df.columns]
+
+    # 若最新一行 Close 为 NaN（Yahoo 日终清算尚未完成时的常见状态），用 fast_info 补齐最新定盘价
+    if not df.empty and pd.isna(df["Close"].iloc[-1]) and tk is not None:
+        try:
+            fi = tk.fast_info
+            last_p = fi.get("lastPrice")
+            if last_p is not None and not np.isnan(last_p):
+                df.iloc[-1, df.columns.get_loc("Close")] = float(last_p)
+                if "Open" in df.columns and fi.get("open") is not None:
+                    df.iloc[-1, df.columns.get_loc("Open")] = float(fi["open"])
+                if "High" in df.columns and fi.get("dayHigh") is not None:
+                    df.iloc[-1, df.columns.get_loc("High")] = float(fi["dayHigh"])
+                if "Low" in df.columns and fi.get("dayLow") is not None:
+                    df.iloc[-1, df.columns.get_loc("Low")] = float(fi["dayLow"])
+                if "Volume" in df.columns and fi.get("lastVolume") is not None:
+                    df.iloc[-1, df.columns.get_loc("Volume")] = float(fi["lastVolume"])
+        except Exception:
+            pass
+
     df.index = pd.to_datetime(df.index).tz_localize(None)
     df = _standardize_ohlcv(df)
-    df, projected = _project_intraday_volume(df)
-    return {"df": df, "projected": projected, "cached": False}, str(df.index[-1].date())
+
+    # 3) 落盘真实定盘序列
+    CACHE_DIR.mkdir(exist_ok=True)
+    df.to_csv(cache, index_label="Date")
+
+    return {"df": df, "cached": False}, str(df.index[-1].date()), None
 
 
 def fetch_equity_daily(tickers):
@@ -350,7 +424,6 @@ def fetch_equity_daily(tickers):
         info = {k: v for k, v in r.items() if k != "value"}
         if r["ok"]:
             data[tk] = r["value"]["df"]
-            info["projected"] = r["value"]["projected"]
             info["cached"] = r["value"]["cached"]
             info["rows"] = len(r["value"]["df"])
         meta[tk] = info
@@ -374,53 +447,112 @@ _LAST_VALID_VOLUME_PCR = None  # 模块级缓存最近有效成交 PCR
 
 def _pcr_yf_options(ticker="QQQ"):
     global _LAST_VALID_VOLUME_PCR
+    cache = CACHE_DIR / f"yf_pcr_{ticker}.json"
+
+    # 1) TTL 缓存命中：不发起网络请求
+    if cache.exists() and (time.time() - cache.stat().st_mtime) < YF_CACHE_TTL_SEC:
+        try:
+            payload = json.loads(cache.read_text(encoding="utf-8"))
+            value = payload["value"]
+            _LAST_VALID_VOLUME_PCR = value.get("pcr") if value.get("method") == "volume" else _LAST_VALID_VOLUME_PCR
+            note = f"命中 {YF_CACHE_TTL_SEC // 60} 分钟本地缓存，未发起网络请求"
+            return value, value["expiry"], note
+        except Exception:
+            pass  # 缓存损坏则落回网络重取
+
+    # 2) 429 全局冷却：快速跳过
+    remain = _yf_cooldown_remaining_min()
+    if remain > 0:
+        raise RuntimeError(f"yfinance 处于 Yahoo 429 冷却期（剩余约 {remain} 分钟），本轮跳过网络请求")
+
     import yfinance as yf
-    tk = yf.Ticker(ticker)
-    expirations = tk.options
+    try:
+        tk = yf.Ticker(ticker)
+        expirations = tk.options
+    except Exception as e:
+        _raise_if_yf_rate_limit(e)
+        raise
     if not expirations:
         raise ValueError("QQQ 期权到期日列表为空")
     today = datetime.now(NY_TZ).date()
-    chosen, dte = None, None
+    # 筛选距今 7~35 天内的到期合约（周五是月度/周度期权核心结算日，集中了 90%+ 的机构流动性与持仓）
+    candidates = []
     for e in expirations:
-        d = (date.fromisoformat(e) - today).days
-        if 7 <= d <= 25:
-            chosen, dte = e, d
-            break
-    if chosen is None:
-        raise ValueError("无距今 7~25 天的到期合约")
-    hist = tk.history(period="5d", auto_adjust=True)
-    if hist.empty:
-        raise ValueError("无法获取 QQQ 现价用于行权价过滤")
-    spot = float(hist["Close"].dropna().iloc[-1])
-    chain = tk.option_chain(chosen)
+        try:
+            ed = date.fromisoformat(e)
+            d = (ed - today).days
+            if 7 <= d <= 35:
+                candidates.append((e, d, ed.weekday() == 4))
+        except Exception:
+            continue
+    if not candidates:
+        raise ValueError("无距今 7~35 天的可用期权合约")
+
+    # 优先筛选周五到期合约，规避薄弱的周内日到期合约噪音
+    friday_cands = [c for c in candidates if c[2]]
+    target_cands = friday_cands if friday_cands else candidates
+
+    chosen, dte = None, None
+    best_oi = -1.0
+    best_chain = None
+
+    for c_exp, c_dte, _ in target_cands:
+        try:
+            ch = tk.option_chain(c_exp)
+            oi_sum = float(ch.calls["openInterest"].fillna(0).sum() + ch.puts["openInterest"].fillna(0).sum())
+            if oi_sum > best_oi:
+                best_oi = oi_sum
+                chosen, dte = c_exp, c_dte
+                best_chain = ch
+        except Exception as e:
+            _raise_if_yf_rate_limit(e)
+            continue
+
+    if chosen is None or best_chain is None:
+        raise ValueError("无法获取主力期权链数据")
+
+    try:
+        hist = tk.history(period="5d", auto_adjust=True)
+        if not hist.empty and not pd.isna(hist["Close"].dropna().iloc[-1]):
+            spot = float(hist["Close"].dropna().iloc[-1])
+        else:
+            spot = float(tk.fast_info.get("lastPrice", 500.0))
+    except Exception:
+        spot = float(tk.fast_info.get("lastPrice", 500.0))
+
+    chain = best_chain
     lo, hi = 0.90 * spot, 1.10 * spot
     calls = chain.calls[(chain.calls["strike"] >= lo) & (chain.calls["strike"] <= hi)]
     puts = chain.puts[(chain.puts["strike"] >= lo) & (chain.puts["strike"] <= hi)]
     cv, pv = float(calls["volume"].fillna(0).sum()), float(puts["volume"].fillna(0).sum())
-    base = {"expiry": chosen, "dte": dte, "spot": round(spot, 2), "call_volume": cv, "put_volume": pv}
+    base = {"expiry": chosen, "dte": dte, "spot": round(spot, 2), "call_volume": cv, "put_volume": pv, "total_oi": best_oi}
     if cv + pv >= 1000 and cv > 0:
         vol_pcr = round(pv / cv, 3)
         _LAST_VALID_VOLUME_PCR = vol_pcr
-        return {**base, "pcr": vol_pcr, "method": "volume"}, chosen
+        value = {**base, "pcr": vol_pcr, "method": "volume"}
+    else:
+        coi, poi = float(calls["openInterest"].fillna(0).sum()), float(puts["openInterest"].fillna(0).sum())
+        if coi + poi <= 0:
+            raise ValueError("过滤后成交量与持仓量均为空")
 
-    coi, poi = float(calls["openInterest"].fillna(0).sum()), float(puts["openInterest"].fillna(0).sum())
-    if coi + poi <= 0:
-        raise ValueError("过滤后成交量与持仓量均为空（可能为非交易时段数据重置）")
+        raw_oi_pcr = poi / max(coi, 1.0)
+        # 持仓 OI 偏度校准系数 0.78：QQQ 机构天然偏好持有大量深度实值/虚值认沽对冲仓位
+        calibrated_pcr = round(raw_oi_pcr * 0.78, 3)
+        value = {
+            **base,
+            "pcr": calibrated_pcr,
+            "method": "open_interest_calibrated",
+            "raw_oi_pcr": round(raw_oi_pcr, 3),
+            "calibration_factor": 0.78,
+            "last_valid_volume_pcr": _LAST_VALID_VOLUME_PCR,
+            "call_oi": coi,
+            "put_oi": poi
+        }
 
-    raw_oi_pcr = poi / max(coi, 1.0)
-    # 持仓 OI 偏度校准系数 0.78：QQQ 机构天然偏好持有大量深度实值/虚值认沽对冲仓位，
-    # 若直接套用成交量阈值会导致盘后跳变飙升至 100 分假预警；校准后消除结构性滑点
-    calibrated_pcr = round(raw_oi_pcr * 0.78, 3)
-    return {
-        **base,
-        "pcr": calibrated_pcr,
-        "method": "open_interest_calibrated",
-        "raw_oi_pcr": round(raw_oi_pcr, 3),
-        "calibration_factor": 0.78,
-        "last_valid_volume_pcr": _LAST_VALID_VOLUME_PCR,
-        "call_oi": coi,
-        "put_oi": poi
-    }, chosen
+    # 3) 落盘 TTL 缓存
+    CACHE_DIR.mkdir(exist_ok=True)
+    cache.write_text(json.dumps({"value": value}, ensure_ascii=False), encoding="utf-8")
+    return value, chosen, None
 
 
 def fetch_put_call_ratio(ticker="QQQ"):
@@ -456,8 +588,14 @@ def fetch_fear_and_greed():
 # =============================================================================
 
 def _attempts_text(attempts):
-    return "；".join(f"{SOURCE_LABELS.get(a['source'], a['source'])}: {a['status']}"
-                    + (f"（{a['error']}）" if a.get("error") else "") for a in attempts)
+    parts = []
+    for a in attempts:
+        text = f"{SOURCE_LABELS.get(a['source'], a['source'])}: {a['status']}"
+        detail = a.get("note") or a.get("error")
+        if detail:
+            text += f"（{detail}）"
+        parts.append(text)
+    return "；".join(parts)
 
 
 def build_data_status(bundle):
@@ -470,10 +608,6 @@ def build_data_status(bundle):
             if m["tier"] == "secondary":
                 issues.append({"level": "secondary", "item": f"{tk} 日线",
                                "detail": f"来自非第一顺位源 {SOURCE_LABELS.get(m['source'])}；首选失败：{_attempts_text(m['attempts'][:-1])}"})
-            if m.get("projected"):
-                p = m["projected"]
-                issues.append({"level": "note", "item": f"{tk} 日线",
-                               "detail": f"美股盘中未收盘K线，已按开盘{p['elapsed_min']}分钟将当日成交量×{p['factor']}折算全天预估"})
     for key, label in (("treasury", "美债2Y/10Y收益率"), ("pcr", "QQQ期权PCR"), ("fear_greed", "CNN恐慌贪婪指数")):
         r = bundle[key]
         if not r["ok"]:
@@ -490,12 +624,19 @@ def build_data_status(bundle):
 
 def fetch_all_inputs():
     tickers = AI_LEADERS + list(BENCHMARKS.values())
+    equity = fetch_equity_daily(tickers)
     bundle = {
-        "equity": fetch_equity_daily(tickers),
+        "equity": equity,
         "treasury": fetch_treasury_yields(),
         "pcr": fetch_put_call_ratio(),
         "fear_greed": fetch_fear_and_greed(),
         "fetched_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    # 日线覆盖率：评分口径透明化的依据（缺失标的的因子按引擎缺省处理，评分可信度随覆盖率下降）
+    bundle["coverage"] = {
+        "ok": len(equity["data"]),
+        "total": len(tickers),
+        "missing": [tk for tk in tickers if tk not in equity["data"]],
     }
     bundle["status"] = build_data_status(bundle)
     return bundle
