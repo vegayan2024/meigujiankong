@@ -16,10 +16,10 @@ import json
 from datetime import datetime
 from push_notifier import MobilePushNotifier, CONFIG_FILE
 
-st.set_page_config(page_title="美股科技链与宏观流动性定盘监测终端", layout="wide")
+st.set_page_config(page_title="美股与海外流动性定盘监测终端", layout="wide")
 
-st.title("🏛️ 美股科技链与宏观流动性定盘监测终端")
-st.caption("晨会定盘与A股开盘对冲沙盘：⚡ 战术级EOD定盘信号 (机构派发日/龙头量价背离/半导体动能/期权月度PCR) ✖ 🌐 战略级中长频宏观信号 (美债10Y-2Y利差路径/200日均线乖离/CNN贪婪恐慌)")
+st.title("🏛️ 美股与海外流动性定盘监测终端")
+st.caption("每日晨会研判：监控昨夜美股大科技筹码变动与宏观风险，判断对今早 A 股与中证1000 (IM) 的真实冲击")
 
 # =============================================================================
 # 侧边栏：手机端信息推送设置与即时测试
@@ -123,41 +123,53 @@ c1, c2, c3, c4 = st.columns(4)
 # 1. 综合风险评分
 if total_score is not None:
     if total_score >= 70:
-        c1.metric("综合系统性风险总分", f"{total_score} / 100", "高危共振警戒", delta_color="inverse")
+        c1.metric("全球综合传导风险", f"{total_score} / 100", "高危共振警戒", delta_color="inverse",
+                  help="【0-100分，越低越安全】综合衡量美股对A股的带崩杀伤力。<50分为安全，50-70分为震荡分化，≥70分为系统性高危。")
     elif total_score >= 45:
-        c1.metric("综合系统性风险总分", f"{total_score} / 100", "中度分歧累积", delta_color="off")
+        c1.metric("全球综合传导风险", f"{total_score} / 100", "中度分歧累积", delta_color="off",
+                  help="【0-100分，越低越安全】综合衡量美股对A股的带崩杀伤力。<50分为安全，50-70分为震荡分化，≥70分为系统性高危。")
     else:
-        c1.metric("综合系统性风险总分", f"{total_score} / 100", "整体健康安全", delta_color="normal")
+        c1.metric("全球综合传导风险", f"{total_score} / 100", "整体健康安全", delta_color="normal",
+                  help="【0-100分，越低越安全】综合衡量美股对A股的带崩杀伤力。<50分为安全，50-70分为震荡分化，≥70分为系统性高危。")
 else:
-    c1.metric("综合系统性风险总分", "数据不足", "触发熔断保护", delta_color="off")
+    c1.metric("全球综合传导风险", "数据不足", "触发熔断保护", delta_color="off",
+              help="外部金融数据源缺失，系统自动熔断中性保护。")
 
 # 2. 战术短期定盘评分
 if short_score is not None:
     if short_score >= 70:
-        c2.metric("⚡ 战术定盘风险", f"{short_score} / 100", "科技链筹码松动", delta_color="inverse")
+        c2.metric("⚡ 科技股短期抛压", f"{short_score} / 100", "科技链筹码松动", delta_color="inverse",
+                  help="【短线指标】反映纳指与AI巨头最近几天的机构抛盘力度、龙头虚涨情况与期权对冲防守情绪。")
     elif short_score >= 45:
-        c2.metric("⚡ 战术定盘风险", f"{short_score} / 100", "结构性分化", delta_color="off")
+        c2.metric("⚡ 科技股短期抛压", f"{short_score} / 100", "结构性分化", delta_color="off",
+                  help="【短线指标】反映纳指与AI巨头最近几天的机构抛盘力度、龙头虚涨情况与期权对冲防守情绪。")
     else:
-        c2.metric("⚡ 战术定盘风险", f"{short_score} / 100", "微观流动性充沛", delta_color="normal")
+        c2.metric("⚡ 科技股短期抛压", f"{short_score} / 100", "微观流动性充沛", delta_color="normal",
+                  help="【短线指标】反映纳指与AI巨头最近几天的机构抛盘力度、龙头虚涨情况与期权对冲防守情绪。")
 else:
-    c2.metric("⚡ 战术定盘风险", "数据不足", "有效因子不足2个", delta_color="off")
+    c2.metric("⚡ 科技股短期抛压", "数据不足", "有效因子不足2个", delta_color="off")
 
 # 3. 中长期战略宏观评分
 if macro_score is not None:
     if macro_score >= 70:
-        c3.metric("🌐 中长宏观战略风险", f"{macro_score} / 100", "衰退/利差高压", delta_color="inverse")
+        c3.metric("🌐 美国宏观经济大势", f"{macro_score} / 100", "衰退/利差高压", delta_color="inverse",
+                  help="【大周期指标】反映美国国债利差、大盘偏离年线距离与全市场贪婪/恐慌度。代表宏观大气候。")
     elif macro_score >= 45:
-        c3.metric("🌐 中长宏观战略风险", f"{macro_score} / 100", "宏观温和承压", delta_color="off")
+        c3.metric("🌐 美国宏观经济大势", f"{macro_score} / 100", "宏观温和承压", delta_color="off",
+                  help="【大周期指标】反映美国国债利差、大盘偏离年线距离与全市场贪婪/恐慌度。代表宏观大气候。")
     else:
-        c3.metric("🌐 中长宏观战略风险", f"{macro_score} / 100", "大周期扩张平稳", delta_color="normal")
+        c3.metric("🌐 美国宏观经济大势", f"{macro_score} / 100", "大周期扩张平稳", delta_color="normal",
+                  help="【大周期指标】反映美国国债利差、大盘偏离年线距离与全市场贪婪/恐慌度。代表宏观大气候。")
 else:
-    c3.metric("🌐 中长宏观战略风险", "数据不足", "有效因子不足2个", delta_color="off")
+    c3.metric("🌐 美国宏观经济大势", "数据不足", "有效因子不足2个", delta_color="off")
 
 # 4. 共振警报状态
 if resonance["active"]:
-    c4.metric("多因子共振状态", "🔥 触发极端共振", f"{resonance['extreme_count']}个因子极度高危 (+{int(resonance['boost'])}分)", delta_color="inverse")
+    c4.metric("🔥 极端风险共振预警", "触发极端共振", f"{resonance['extreme_count']}个因子极度高危 (+{int(resonance['boost'])}分)", delta_color="inverse",
+              help="当短期和宏观有3个以上指标同时严重报警时，表明暴风雨来临，需坚决减仓防守！")
 else:
-    c4.metric("多因子共振状态", "未触发共振", f"高危因子: {resonance['extreme_count']} 个", delta_color="normal")
+    c4.metric("🔥 极端风险共振预警", "未触发共振", f"高危因子: {resonance['extreme_count']} 个", delta_color="normal",
+              help="当前未发生多指标同时恶化，美股偶发震荡多属局部洗盘，不会引起系统性踩踏。")
 
 st.markdown("---")
 
@@ -170,39 +182,43 @@ col_short, col_macro = st.columns([1, 1], gap="large")
 # 左栏：⚡ 战术级EOD定盘信号专栏
 # -----------------------------------------------------------------------------
 with col_short:
-    st.subheader("⚡ 战术级EOD定盘信号 (Tactical Signals)")
-    st.caption("核心观察：纳指与AI领涨股流动性拐点、筹码派发节奏与衍生品防守买盘")
+    st.subheader("⚡ 科技股短期筹码雷达（主力暗中出货了吗？）")
+    st.caption("核心观察：华尔街机构是否在抛售纳指、AI龙头是否虚涨滞涨、衍生品避险情绪")
     
     # 短频指标矩阵
     s1, s2 = st.columns(2)
     dist_cnt = s_details['distribution_days']['count']
     s1.metric(
-        "QQQ 近25日机构派发天数", 
+        "机构放量出货天数 (QQQ 近25日)", 
         f"{dist_cnt} 天" if dist_cnt is not None else "缺失", 
-        ("≥5天高度警惕机构抛售" if dist_cnt >= 5 else "机构抛压平稳") if dist_cnt is not None else "无法计算"
+        ("≥5天高度警惕机构抛售" if dist_cnt >= 5 else "机构抛压平稳") if dist_cnt is not None else "无法计算",
+        help="近25个交易日中，纳指放量下跌的天数。≥5天代表大主力在借反弹大举暗中出货，筹码开始松动。"
     )
     pcr_val = s_details['options_pcr']['pcr_value']
     s2.metric(
-        "QQQ 月度结算期权 Put/Call Ratio", 
+        "做空买保险比例 (期权 PCR)", 
         f"{pcr_val}" if pcr_val is not None else "缺失 (缺省中性)", 
-        ("对冲买盘激增" if pcr_val > 1.1 else "偏中性情绪") if pcr_val is not None else "未接入期权链"
+        ("对冲买盘激增" if pcr_val > 1.1 else "偏中性情绪") if pcr_val is not None else "未接入期权链",
+        help="纳指看跌/看涨期权交易比例。数值越高代表买看跌期权买保险防暴跌的人越多。>1.1为恐慌避险，<0.7为乐观。"
     )
     
     s3, s4 = st.columns(2)
     flagged = s_details['volume_divergence']['flagged']
     s3.metric(
-        "高位无量冲顶/滞涨龙头数", 
+        "高位虚涨/滞涨龙头数 (AI核心股)", 
         f"{len(flagged)} 只" if flagged is not None else "缺失", 
-        (", ".join(flagged) if flagged else "无显著量价顶背离") if flagged is not None else "数据缺失"
+        (", ".join(flagged) if flagged else "无显著量价顶背离") if flagged is not None else "数据缺失",
+        help="监控英伟达、微软、谷歌、台积电、博通。如果在高位缩量虚涨或见顶滞涨，说明领涨核心股动能衰竭。"
     )
     rs_slope = s_details['rs_divergence']['rs_slope_pct']
     s4.metric(
-        "半导体 (SMH / SPY) 20日动能斜率", 
+        "芯片领涨力度 (SMH/SPY 20日走势)", 
         f"{rs_slope}%" if rs_slope is not None else "缺失", 
-        ("科技相对走弱" if rs_slope < 0 else "科技领涨大盘") if rs_slope is not None else "数据缺失"
+        ("芯片相对走弱 (主线休整)" if rs_slope < 0 else "芯片领涨大盘 (主线强劲)") if rs_slope is not None else "数据缺失",
+        help="半导体芯片ETF相对标普大盘的走势强弱。芯片是美股牛市发动机。为负代表芯片跑输大盘，科技线在调整。"
     )
 
-    st.markdown("##### 核心领涨板块相对强弱 (SMH / SPY)")
+    st.markdown("##### 核心领涨板块相对强弱 (芯片 ETF vs 标普大盘)")
     if "SMH" in data_dict and "SPY" in data_dict and not data_dict["SMH"].empty and not data_dict["SPY"].empty:
         rs_series = data_dict["SMH"]["Close"] / data_dict["SPY"]["Close"]
         fig_rs = go.Figure()
@@ -210,14 +226,14 @@ with col_short:
             x=rs_series.index, 
             y=rs_series.values, 
             mode='lines', 
-            name='SMH / SPY 动能比',
+            name='芯片/标普 强弱比',
             line=dict(color='#0052FF', width=2)
         ))
         fig_rs.update_layout(
             margin=dict(l=20, r=20, t=20, b=20),
             height=280,
             xaxis_title="交易日期",
-            yaxis_title="相对强弱比 (上行代表芯片强于标普)"
+            yaxis_title="相对强弱 (曲线往上走代表芯片强于大盘)"
         )
         st.plotly_chart(fig_rs, width="stretch")
 
@@ -225,33 +241,36 @@ with col_short:
 # 右栏：🌐 战略级中长频宏观信号专栏
 # -----------------------------------------------------------------------------
 with col_macro:
-    st.subheader("🌐 中长期战略级宏观信号 (Macro Signals)")
-    st.caption("核心观察：美债收益率曲线形态、大周期牛熊均线超买偏离与宏观情绪钟摆")
+    st.subheader("🌐 宏观与大盘健康度（美国大盘底子硬不硬？）")
+    st.caption("核心观察：美国国债利率信号、标普500距离年线位置、华尔街贪婪恐慌度")
 
     m1, m2, m3 = st.columns(3)
     # 美债利差
     spread_info = m_details['yield_spread']
     m1.metric(
-        "美债 10Y-2Y 曲线利差",
+        "美债收益率利差 (10Y-2Y)",
         f"{spread_info['spread']}%" if spread_info['spread'] is not None else "缺失",
-        f"{spread_info['status']}"
+        f"{spread_info['status']}",
+        help="美国10年期与2年期国债利差，经济衰退核心晴雨表。如果长期倒挂（负数）后迅速转正走陡，往往预示衰退落地。"
     )
     # 200日均线乖离
     sma_info = m_details['sma200_deviation']
     m2.metric(
-        "标普500 (SPY) 200日均线乖离",
+        "标普500 偏离年线距离",
         f"{sma_info['dev_pct']}%" if sma_info['dev_pct'] is not None else "缺失",
-        f"{sma_info['status']}"
+        f"{sma_info['status']}",
+        help="标普500距离200日均线（牛熊年线）的偏离度。>15%极度超买吹泡沫；在0%附近说明踩在关键支撑位震荡；<-10%破位熊市。"
     )
     # 恐慌贪婪
     fg_info = m_details['fear_greed']
     m3.metric(
-        "CNN 恐慌与贪婪指数",
+        "市场情绪体温计 (CNN恐慌贪婪)",
         f"{int(fg_info['value'])}" if fg_info['value'] is not None else "缺失",
-        f"{fg_info['status']}"
+        f"{fg_info['status']}",
+        help="华尔街情绪指标（0-100）。<25为极度恐慌（大家割肉抛盘），>75为极度贪婪（散户狂热见顶信号）。"
     )
 
-    st.markdown("##### 全维风险因子雷达图 (Radar Profile)")
+    st.markdown("##### 7大风险因子全景雷达")
     categories = [
         "机构派发日", 
         "龙头量价背离", 
@@ -297,18 +316,18 @@ st.markdown("---")
 # =============================================================================
 # 底部：🎯 针对 A 股与中证1000 (IM) 期指的双频联动对冲矩阵
 # =============================================================================
-st.subheader("🎯 A股与中证1000/IM期指联动对冲沙盘")
+st.subheader("🎯 今日 A股 与 中证1000 (IM) 实操对冲锦囊")
 
 col_guide_left, col_guide_right = st.columns([1, 2])
 
 with col_guide_left:
-    st.markdown(f"#### 状态研判：{guide['level']}")
+    st.markdown(f"#### 状态定性：{guide['level']}")
     score_display = f"`{total_score} / 100`" if total_score is not None else "`⚠️ 数据缺失熔断`"
-    st.markdown(f"**综合风险评分：** {score_display}")
+    st.markdown(f"**全球综合风险：** {score_display}")
     short_display = f"**{short_score}** 分" if short_score is not None else "数据不足"
-    st.markdown(f"- ⚡ 战术定盘分: {short_display}")
+    st.markdown(f"- ⚡ 科技短期抛压: {short_display}")
     macro_display = f"**{macro_score}** 分" if macro_score is not None else "数据不足"
-    st.markdown(f"- 🌐 中长宏观分: {macro_display}")
+    st.markdown(f"- 🌐 美国宏观大势: {macro_display}")
     if resonance["active"]:
         st.error(f"⚠️ 触发黑天鹅共振加分 (+{int(resonance['boost'])}分)，极端因子数达到 {resonance['extreme_count']} 个！")
 
